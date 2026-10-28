@@ -1,11 +1,9 @@
 using System;
-using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net;
 using BTCPayServer.Abstractions.Extensions;
 using BTCPayServer.Configuration;
-using BTCPayServer.Controllers.Greenfield;
 using BTCPayServer.Data;
 using BTCPayServer.Fido2;
 using BTCPayServer.Filters;
@@ -13,11 +11,11 @@ using BTCPayServer.Logging;
 using BTCPayServer.PaymentRequest;
 using BTCPayServer.Plugins;
 using BTCPayServer.Security;
+using BTCPayServer.Services;
 using BTCPayServer.Services.Apps;
 using BTCPayServer.Storage;
 using Fido2NetLib;
 using Microsoft.AspNetCore.Authentication;
-using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Hosting;
@@ -33,39 +31,80 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Net.Http.Headers;
+using NBXplorer;
 using NicolasDorier.RateLimits;
 
 namespace BTCPayServer.Hosting
 {
     public class Startup
     {
-        public Startup(IConfiguration conf, IWebHostEnvironment env, ILoggerFactory loggerFactory)
+        public Startup(IConfiguration conf)
         {
             Configuration = conf;
-            _Env = env;
-            LoggerFactory = loggerFactory;
-            Logs = new Logs();
-            Logs.Configure(loggerFactory);
+            SetLoggerFactory(new NullLoggerFactory());
         }
 
-        readonly IWebHostEnvironment _Env;
+        private void SetLoggerFactory(ILoggerFactory factory)
+        {
+            LoggerFactory = factory ?? new NullLoggerFactory();
+            Logs = new Logs();
+            Logs.Configure(LoggerFactory);
+        }
+
         public IConfiguration Configuration
         {
             get; set;
         }
-        public ILoggerFactory LoggerFactory { get; }
-        public Logs Logs { get; }
+
+        private void EnsureLogging(IServiceCollection services)
+        {
+            if (LoggerFactory is NullLoggerFactory)
+            {
+                var service = services.BuildServiceProvider().GetService<ILoggerFactory>();
+                SetLoggerFactory(service);
+            }
+        }
+
+        public ILoggerFactory LoggerFactory { get; set; }
+        public Logs Logs { get; set; }
+
+        public static ServiceProvider CreateBootstrap(IConfiguration conf)
+        {
+            return CreateBootstrap(conf, new Logs(), new FuncLoggerFactory(n => NullLogger.Instance));
+        }
+        public static ServiceProvider CreateBootstrap(IConfiguration conf, Logs logs, ILoggerFactory loggerFactory)
+        {
+            ServiceCollection bootstrapServices = new ServiceCollection();
+            var networkType = DefaultConfiguration.GetNetworkType(conf);
+            bootstrapServices.AddSingleton(logs);
+            bootstrapServices.AddSingleton(loggerFactory);
+            bootstrapServices.AddSingleton<IConfiguration>(conf);
+            bootstrapServices.AddSingleton<SelectedChains>();
+            bootstrapServices.AddSingleton<NBXplorerNetworkProvider>(new NBXplorerNetworkProvider(networkType));
+            return bootstrapServices.BuildServiceProvider();
+        }
+
         public void ConfigureServices(IServiceCollection services)
         {
+            EnsureLogging(services);
+            var bootstrapServiceProvider = CreateBootstrap(Configuration, Logs, LoggerFactory);
+            services.AddSingleton(bootstrapServiceProvider.GetRequiredService<SelectedChains>());
+            services.AddSingleton(bootstrapServiceProvider.GetRequiredService<NBXplorerNetworkProvider>());
+
             services.AddMemoryCache();
             services.AddDataProtection()
                 .SetApplicationName("BTCPay Server")
                 .PersistKeysToFileSystem(new DirectoryInfo(new DataDirectories().Configure(Configuration).DataDir));
+
+            services.AddScoped<ISecurityStampValidator, BTCPayServerSecurityStampValidator>();
+            services.AddSingleton<BTCPayServerSecurityStampValidator.DisabledUsers>();
             services.AddIdentity<ApplicationUser, IdentityRole>()
                 .AddEntityFrameworkStores<ApplicationDbContext>()
-                .AddDefaultTokenProviders();
+                .AddDefaultTokenProviders()
+                .AddInvitationTokenProvider();
             services.Configure<AuthenticationOptions>(opts =>
             {
                 opts.DefaultAuthenticateScheme = null;
@@ -74,12 +113,6 @@ namespace BTCPayServer.Hosting
                 opts.DefaultScheme = IdentityConstants.ApplicationScheme;
                 opts.DefaultSignInScheme = null;
                 opts.DefaultSignOutScheme = null;
-            });
-            services.PostConfigure<CookieAuthenticationOptions>(IdentityConstants.ApplicationScheme, opt =>
-            {
-                opt.LoginPath = "/login";
-                opt.AccessDeniedPath = "/errors/403";
-                opt.LogoutPath = "/logout";
             });
 
             services.Configure<SecurityStampValidatorOptions>(opts =>
@@ -90,15 +123,18 @@ namespace BTCPayServer.Hosting
             services.AddBTCPayServer(Configuration, Logs);
             services.AddProviderStorage();
             services.AddSession();
-            services.AddSignalR();
+            services.AddSignalR().AddNewtonsoftJsonProtocol(options =>
+            {
+                NBitcoin.JsonConverters.Serializer.RegisterFrontConverters(options.PayloadSerializerSettings);
+                options.PayloadSerializerSettings.Converters.Add(new BTCPayServer.Lightning.JsonConverters.LightMoneyJsonConverter());
+            });
             services.AddFido2(options =>
                 {
                     options.ServerName = "BTCPay Server";
                 })
                 .AddCachedMetadataService(config =>
                 {
-                    //They'll be used in a "first match wins" way in the order registered
-                    config.AddStaticMetadataRepository();
+                    config.AddFidoMetadataRepository();
                 });
             var descriptor = services.Single(descriptor => descriptor.ServiceType == typeof(Fido2Configuration));
             services.Remove(descriptor);
@@ -108,16 +144,15 @@ namespace BTCPayServer.Hosting
                 return new Fido2Configuration()
                 {
                     ServerName = "BTCPay Server",
-                    Origin = $"{httpContext.HttpContext.Request.Scheme}://{httpContext.HttpContext.Request.Host}",
+                    Origins = new[] { $"{httpContext.HttpContext.Request.Scheme}://{httpContext.HttpContext.Request.Host}" }.ToHashSet(),
                     ServerDomain = httpContext.HttpContext.Request.Host.Host
                 };
             });
             services.AddScoped<Fido2Service>();
-            services.AddSingleton<UserLoginCodeService>();
             services.AddSingleton<LnurlAuthService>();
             services.AddSingleton<LightningAddressService>();
             var mvcBuilder = services.AddMvc(o =>
-             {
+                {
                  o.Filters.Add(new XFrameOptionsAttribute(XFrameOptionsAttribute.XFrameOptions.Deny));
                  o.Filters.Add(new XContentTypeOptionsAttribute("nosniff"));
                  o.Filters.Add(new XXSSProtectionAttribute());
@@ -126,7 +161,10 @@ namespace BTCPayServer.Hosting
                  if (!Configuration.GetOrDefault<bool>("nocsp", false))
                      o.Filters.Add(new ContentSecurityPolicyAttribute(CSPTemplate.AntiXSS));
                  o.Filters.Add(new JsonHttpExceptionFilter());
+                 // Note: Plugins should rather put controller-specific filters rather than this global one
+                 o.Filters.Add<Security.SetContextFilter>();
                  o.Filters.Add(new JsonObjectExceptionFilter());
+                 o.Filters.Add(new UIControllerAntiforgeryTokenAttribute());
              })
             .ConfigureApiBehaviorOptions(options =>
             {
@@ -140,13 +178,25 @@ namespace BTCPayServer.Hosting
                 // /Components/{View Component Name}/{View Name}.cshtml
                 o.ViewLocationFormats.Add("/{0}.cshtml");
                 o.PageViewLocationFormats.Add("/{0}.cshtml");
+
+                // Allows the use of Area for plugins
+                o.AreaViewLocationFormats.Add("/Plugins/{2}/Views/{1}/{0}.cshtml");
+                o.AreaViewLocationFormats.Add("/Plugins/{2}/Views/{0}.cshtml");
+                o.AreaViewLocationFormats.Add("/Plugins/{2}/Views/Shared/{0}.cshtml");
+
+                o.AreaViewLocationFormats.Add("/{0}.cshtml");
             })
             .AddNewtonsoftJson()
-            .AddRazorRuntimeCompilation()
-            .AddPlugins(services, Configuration, LoggerFactory)
+            .AddPlugins(services, Configuration, LoggerFactory, bootstrapServiceProvider)
+            .AddDataAnnotationsLocalization()
             .AddControllersAsServices();
 
-            services.AddServerSideBlazor();
+            services.AddServerSideBlazor().AddHubOptions(o =>
+            {
+                // PSBT with previous transactions could become
+                // easily too big to get signed without this.
+                o.MaximumReceiveMessageSize = BlazorMaximumReceiveMessageSize;
+            });
 
             LowercaseTransformer.Register(services);
             ValidateControllerNameTransformer.Register(services);
@@ -205,6 +255,9 @@ namespace BTCPayServer.Hosting
                 });
             }
         }
+
+        public const long BlazorMaximumReceiveMessageSize = 5_000_000;
+
         public void Configure(
             IApplicationBuilder app,
             IWebHostEnvironment env,
@@ -214,7 +267,8 @@ namespace BTCPayServer.Hosting
             ILoggerFactory loggerFactory,
             IRateLimitService rateLimits)
         {
-            Logs.Configure(loggerFactory);
+            SetLoggerFactory(loggerFactory);
+
             Logs.Configuration.LogInformation($"Root Path: {options.RootPath}");
             if (options.RootPath.Equals("/", StringComparison.OrdinalIgnoreCase))
             {
@@ -255,6 +309,10 @@ namespace BTCPayServer.Hosting
             var rewriteOptions = new RewriteOptions();
             rewriteOptions.AddRewrite("_blazor/(negotiate|initializers|disconnect)$", "/_blazor/$1", skipRemainingRules: true);
             rewriteOptions.AddRewrite("_blazor$", "/_blazor", skipRemainingRules: true);
+
+            // A rewrite rule to support the old API
+            rewriteOptions.AddRewrite("api/v1/stores/([^/]+)/payment-methods/[Oo]n[Cc]hain/([^/]+)/(preview|generate)", "/api/v1/stores/$1/payment-methods/$2-CHAIN/wallet/$3", skipRemainingRules: true);
+            rewriteOptions.AddRewrite("api/v1/stores/([^/]+)/payment-methods/[Oo]n[Cc]hain/([^/]+)(.*)", "/api/v1/stores/$1/payment-methods/$2-CHAIN$3", skipRemainingRules: true);
             app.UseRewriter(rewriteOptions);
 
             app.UseHeadersOverride();
@@ -262,26 +320,18 @@ namespace BTCPayServer.Hosting
             {
                 ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto
             };
-            forwardingOptions.KnownNetworks.Clear();
+            forwardingOptions.KnownIPNetworks.Clear();
             forwardingOptions.KnownProxies.Clear();
             forwardingOptions.ForwardedHeaders = ForwardedHeaders.All;
             app.UseForwardedHeaders(forwardingOptions);
 
             app.UseStatusCodePagesWithReExecute("/errors/{0}");
 
+            app.UseExceptionHandler("/errors/{0}");
             app.UsePayServer();
             app.UseRouting();
-            app.UseCors();
+            app.UseCors(CorsPolicies.All);
 
-
-            // HACK: Make blazor js available on: ~/_blazorfiles/_framework/blazor.server.js
-            // Workaround this bug https://github.com/dotnet/aspnetcore/issues/19578
-            app.UseStaticFiles(new StaticFileOptions()
-            {
-                RequestPath = "/_blazorfiles",
-                FileProvider = new ManifestEmbeddedFileProvider(typeof(ComponentServiceCollectionExtensions).Assembly),
-                OnPrepareResponse = LongCache
-            });
             app.UseStaticFiles(new StaticFileOptions
             {
                 OnPrepareResponse = LongCache
@@ -331,17 +381,6 @@ namespace BTCPayServer.Hosting
             // https://andrewlock.net/adding-cache-control-headers-to-static-files-in-asp-net-core/
             const int durationInSeconds = 60 * 60 * 24 * 365;
             ctx.Context.Response.Headers[HeaderNames.CacheControl] = "public,max-age=" + durationInSeconds;
-        }
-
-        private static Action<Microsoft.AspNetCore.StaticFiles.StaticFileResponseContext> NewMethod()
-        {
-            return ctx =>
-            {
-                // Cache static assets for one year, set asp-append-version="true" on references to update on change.
-                // https://andrewlock.net/adding-cache-control-headers-to-static-files-in-asp-net-core/
-                const int durationInSeconds = 60 * 60 * 24 * 365;
-                ctx.Context.Response.Headers[HeaderNames.CacheControl] = "public,max-age=" + durationInSeconds;
-            };
         }
     }
 }

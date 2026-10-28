@@ -1,8 +1,5 @@
-using System;
-using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using BTCPayServer.Services.Rates;
@@ -29,7 +26,7 @@ namespace BTCPayServer.Rating.Providers
 
         public async Task<PairRate[]> GetRatesAsync(CancellationToken cancellationToken)
         {
-            var response = await _httpClient.GetAsync("https://api.btcturk.com/api/v2/ticker", cancellationToken);
+            using var response = await _httpClient.GetAsync("https://api.btcturk.com/api/v2/ticker", cancellationToken);
             var jarray = (JArray)(await response.Content.ReadAsAsync<JObject>(cancellationToken))["data"];
             var tickers = jarray.ToObject<Ticker[]>();
             return tickers

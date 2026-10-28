@@ -18,45 +18,91 @@ namespace BTCPayServer.Controllers
         [HttpGet("server/plugins")]
         public async Task<IActionResult> ListPlugins(
             [FromServices] PluginService pluginService,
-            [FromServices] BTCPayServerOptions btcPayServerOptions)
+            [FromServices] BTCPayServerOptions btcPayServerOptions,
+            string search = null)
         {
             IEnumerable<PluginService.AvailablePlugin> availablePlugins;
+            IEnumerable<PluginService.AvailablePlugin> allPlugins;
             try
             {
-                availablePlugins = await pluginService.GetRemotePlugins();
+                allPlugins = await pluginService.GetRemotePlugins(null);
+                availablePlugins = string.IsNullOrEmpty(search)
+                    ? allPlugins
+                    : allPlugins.Where(p =>
+                        p.Identifier.Contains(search, StringComparison.OrdinalIgnoreCase) ||
+                        p.Name.Contains(search, StringComparison.OrdinalIgnoreCase));
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                TempData.SetStatusMessageModel(new StatusMessageModel()
+                TempData.SetStatusMessageModel(new StatusMessageModel
                 {
                     Severity = StatusMessageModel.StatusSeverity.Error,
-                    Message = "Remote plugins lookup failed. Try again later."
+                    Message = StringLocalizer["Remote plugins lookup failed. Try again later. Error: {0}", ex.Message].Value
                 });
                 availablePlugins = Array.Empty<PluginService.AvailablePlugin>();
+                allPlugins = [];
             }
-            var availablePluginsByIdentifier = new Dictionary<string, AvailablePlugin>();
-            foreach (var p in availablePlugins)
-                availablePluginsByIdentifier.TryAdd(p.Identifier, p);
+            var availablePluginsByIdentifier = new Dictionary<string, AvailablePlugin>(StringComparer.OrdinalIgnoreCase);
+            foreach (var p in allPlugins)
+            {
+                if (!availablePluginsByIdentifier.TryGetValue(p.Identifier, out var existing) || p.Version > existing.Version)
+                    availablePluginsByIdentifier[p.Identifier] = p;
+            }
+            
+            var disabled = pluginService.GetDisabledPlugins();
+            var installed = pluginService.Installed;
+            var disabledPluginUpdates = ListPluginsViewModel.GetDisabledPluginUpdates(disabled, availablePluginsByIdentifier);
             var res = new ListPluginsViewModel()
             {
-                Installed = pluginService.LoadedPlugins,
+                Plugins = pluginService.LoadedPlugins,
+                Installed = installed,
                 Available = availablePlugins,
                 Commands = pluginService.GetPendingCommands(),
-                Disabled = pluginService.GetDisabledPlugins(),
+                Disabled = disabled,
                 CanShowRestart = true,
-                DownloadedPluginsByIdentifier = availablePluginsByIdentifier
+                DownloadedPluginsByIdentifier = availablePluginsByIdentifier,
+                DisabledPluginUpdates = disabledPluginUpdates
             };
             return View(res);
         }
 
         public class ListPluginsViewModel
         {
-            public IEnumerable<IBTCPayServerPlugin> Installed { get; set; }
+            public IEnumerable<IBTCPayServerPlugin> Plugins { get; set; }
             public IEnumerable<PluginService.AvailablePlugin> Available { get; set; }
             public (string command, string plugin)[] Commands { get; set; }
             public bool CanShowRestart { get; set; }
-            public string[] Disabled { get; set; }
+            public Dictionary<string, Version> Disabled { get; set; }
             public Dictionary<string, AvailablePlugin> DownloadedPluginsByIdentifier { get; set; } = new Dictionary<string, AvailablePlugin>();
+            public Dictionary<string, Version> Installed { get; set; }
+            public Dictionary<string, PluginService.AvailablePlugin> DisabledPluginUpdates { get; set; }
+
+            public static Dictionary<string, PluginService.AvailablePlugin> GetDisabledPluginUpdates(
+                Dictionary<string, Version> disabled,
+                Dictionary<string, AvailablePlugin> availablePluginsByIdentifier)
+            {
+                var result = new Dictionary<string, PluginService.AvailablePlugin>();
+                foreach (var (disabledPlugin, disabledVersion) in disabled)
+                {
+                    if (disabledVersion == null) continue;
+                    if (availablePluginsByIdentifier.TryGetValue(disabledPlugin, out var available))
+                    {
+                        if (available.Version > disabledVersion)
+                            result[disabledPlugin] = available;
+                    }
+                }
+                return result;
+            }
+        }
+
+        [HttpPost("server/plugins/uninstall-all")]
+        public IActionResult UnInstallAllDisabledPlugin(
+            [FromServices] PluginService pluginService, string plugin)
+        {
+            var disabled = pluginService.GetDisabledPlugins();
+            foreach (var d in disabled)
+                pluginService.UninstallPlugin(d.Key);
+            return RedirectToAction(nameof(ListPlugins));
         }
 
         [HttpPost("server/plugins/uninstall")]
@@ -64,9 +110,23 @@ namespace BTCPayServer.Controllers
             [FromServices] PluginService pluginService, string plugin)
         {
             pluginService.UninstallPlugin(plugin);
-            TempData.SetStatusMessageModel(new StatusMessageModel()
+            TempData.SetStatusMessageModel(new StatusMessageModel
             {
-                Message = "Plugin scheduled to be uninstalled.",
+                Message = StringLocalizer["Plugin scheduled to be uninstalled."].Value,
+                Severity = StatusMessageModel.StatusSeverity.Success
+            });
+
+            return RedirectToAction("ListPlugins");
+        }
+
+        [HttpPost("server/plugins/enable")]
+        public IActionResult EnablePlugin(
+            [FromServices] PluginService pluginService, string plugin)
+        {
+            pluginService.EnablePlugin(plugin);
+            TempData.SetStatusMessageModel(new StatusMessageModel
+            {
+                Message = StringLocalizer["Plugin scheduled to be enabled."].Value,
                 Severity = StatusMessageModel.StatusSeverity.Success
             });
 
@@ -78,9 +138,9 @@ namespace BTCPayServer.Controllers
             [FromServices] PluginService pluginService, string plugin)
         {
             pluginService.CancelCommands(plugin);
-            TempData.SetStatusMessageModel(new StatusMessageModel()
+            TempData.SetStatusMessageModel(new StatusMessageModel
             {
-                Message = "Plugin action cancelled.",
+                Message = StringLocalizer["Plugin action cancelled."].Value,
                 Severity = StatusMessageModel.StatusSeverity.Success
             });
 
@@ -91,33 +151,83 @@ namespace BTCPayServer.Controllers
         public async Task<IActionResult> InstallPlugin(
             [FromServices] PluginService pluginService, string plugin, bool update = false, string version = null)
         {
-            try
+            var ctx = new DownloadPluginContext(pluginService, plugin, version, new(), new(), null);
+            await DownloadPluginAndDependencies(ctx);
+            if (ctx.DependencyFailed.Count == 0)
             {
-                await pluginService.DownloadRemotePlugin(plugin, version);
-                if (update)
+                TempData.SetStatusMessageModel(new StatusMessageModel
                 {
-                    pluginService.UpdatePlugin(plugin);
-                }
-                else
-                {
-                    pluginService.InstallPlugin(plugin);
-                }
-                TempData.SetStatusMessageModel(new StatusMessageModel()
-                {
-                    Message = "Plugin scheduled to be installed.",
+                    Message = StringLocalizer["Plugin scheduled to be installed."].Value,
                     Severity = StatusMessageModel.StatusSeverity.Success
                 });
             }
-            catch (Exception)
+            else
             {
-                TempData.SetStatusMessageModel(new StatusMessageModel()
+                var error = String.Join(" \n", ctx.DependencyFailed
+                    .Select(d => $"{d.Key}: {d.Value}")
+                    .ToArray());
+                TempData.SetStatusMessageModel(new StatusMessageModel
                 {
-                    Message = "The plugin could not be downloaded. Try again later.",
+                    Message = StringLocalizer["The plugin could not be downloaded. Try again later."].Value + " \n" + error,
                     Severity = StatusMessageModel.StatusSeverity.Error
                 });
             }
 
             return RedirectToAction("ListPlugins");
+        }
+
+        public record DownloadPluginContext(PluginService PluginService, string Plugin, string Version, Dictionary<string, AvailablePlugin> Downloaded, Dictionary<string, string> DependencyFailed, VersionCondition VersionCondition);
+        private async Task DownloadPluginAndDependencies(DownloadPluginContext ctx)
+        {
+            if (ctx.Downloaded.ContainsKey(ctx.Plugin)
+                ||
+                ctx.DependencyFailed.ContainsKey(ctx.Plugin))
+                return;
+            AvailablePlugin manifest;
+            try
+            {
+                manifest = await ctx.PluginService.DownloadRemotePlugin(ctx.Plugin, ctx.Version, ctx.VersionCondition);
+            }
+            catch(Exception ex)
+            {
+                ctx.DependencyFailed.Add(ctx.Plugin, ex.Message);
+                return;
+            }
+
+            foreach (var dep in manifest.Dependencies)
+            {
+                if (!PluginManager.DependencyMet(dep, ctx.PluginService.Installed))
+                {
+                    if (dep.Identifier.Equals("BTCPayServer", StringComparison.OrdinalIgnoreCase))
+                    {
+                        ctx.DependencyFailed.Add(ctx.Plugin, $"This condition can't be satisfied {dep}");
+                        return;
+                    }
+
+                    var cond = dep.ParseCondition();
+                    var childCtx = ctx with
+                    {
+                        Plugin = dep.Identifier,
+                        Version = null,
+                        VersionCondition = cond
+                    };
+                    if (childCtx.VersionCondition is VersionCondition.Not)
+                    {
+                        ctx.DependencyFailed.Add(ctx.Plugin, $"The currently installed plugin {dep.Identifier} is incompatible with this plugin.");
+                        return;
+                    }
+
+                    await DownloadPluginAndDependencies(childCtx);
+                    if (childCtx.DependencyFailed.ContainsKey(childCtx.Plugin))
+                    {
+                        ctx.DependencyFailed.Add(ctx.Plugin, $"Failed to download dependency {dep.Identifier}");
+                        return;
+                    }
+                }
+            }
+
+            ctx.PluginService.InstallPlugin(ctx.Plugin);
+            ctx.Downloaded.Add(ctx.Plugin, manifest);
         }
 
         [HttpPost("server/plugins/upload")]
@@ -131,9 +241,9 @@ namespace BTCPayServer.Controllers
                     StringComparison.InvariantCultureIgnoreCase));
             }
 
-            TempData.SetStatusMessageModel(new StatusMessageModel()
+            TempData.SetStatusMessageModel(new StatusMessageModel
             {
-                Message = "Files uploaded, restart server to load plugins",
+                Message = StringLocalizer["Files uploaded, restart server to load plugins"].Value,
                 Severity = StatusMessageModel.StatusSeverity.Success
             });
             return RedirectToAction("ListPlugins");

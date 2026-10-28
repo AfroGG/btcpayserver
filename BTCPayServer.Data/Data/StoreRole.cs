@@ -1,12 +1,6 @@
-
-using System;
 using System.Collections.Generic;
-using System.ComponentModel.DataAnnotations.Schema;
-using System.Linq;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.EntityFrameworkCore.Infrastructure;
-using Newtonsoft.Json;
 
 namespace BTCPayServer.Data;
 
@@ -31,20 +25,5 @@ public class StoreRole
             
             entity.HasIndex(entity => new {entity.StoreDataId, entity.Role}).IsUnique();
         });
-        
-        
-        
-        if (!databaseFacade.IsNpgsql())
-        {
-            builder.Entity<StoreRole>()
-                .Property(o => o.Permissions)
-                .HasConversion(
-                    v => JsonConvert.SerializeObject(v),
-                    v => JsonConvert.DeserializeObject<List<string>>(v)?? new List<string>(),
-                    new ValueComparer<List<string>>(
-                        (c1, c2) =>  c1 ==c2 || c1 != null && c2 != null && c1.SequenceEqual(c2),
-                        c => c.Aggregate(0, (a, v) => HashCode.Combine(a, v.GetHashCode())),
-                        c => c.ToList()));
-        }
     }
 }

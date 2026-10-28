@@ -10,14 +10,12 @@ namespace BTCPayServer.Client.Models
         public string Id { get; set; }
     }
 
-    public class StoreUserData
+    public class StoreUserData : ApplicationUserData
     {
         /// <summary>
-        /// the id of the user
+        /// the store role of the user
         /// </summary>
-        public string UserId { get; set; }
-
-        public string Role { get; set; }
+        public string StoreRole { get; set; }
     }
 
     public class RoleData

@@ -1,4 +1,3 @@
-using System;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 using System.Linq;
@@ -39,17 +38,11 @@ namespace BTCPayServer.Models.StoreViewModels
         [Display(Name = "Default payment method on checkout")]
         public string DefaultPaymentMethod { get; set; }
 
-        [Display(Name = "Use the classic checkout")]
-        public bool UseClassicCheckout { get; set; }
-
         [Display(Name = "Celebrate payment with confetti")]
         public bool CelebratePayment { get; set; }
 
         [Display(Name = "Enable sounds on checkout page")]
         public bool PlaySoundOnPayment { get; set; }
-
-        [Display(Name = "Requires a refund email")]
-        public bool RequiresRefundEmail { get; set; }
 
         [Display(Name = "Only enable the payment method after user explicitly chooses it")]
         public bool LazyPaymentMethods { get; set; }
@@ -63,18 +56,20 @@ namespace BTCPayServer.Models.StoreViewModels
         [Display(Name = "Default language on checkout")]
         public string DefaultLang { get; set; }
 
-        [Display(Name = "Link to a custom CSS stylesheet")]
-        public string CustomCSS { get; set; }
-        
-        [Display(Name = "Link to a custom logo")]
-        public string CustomLogo { get; set; }
-
         [Display(Name = "Custom sound file for successful payment")]
         public IFormFile SoundFile { get; set; }
-        public string SoundFileId { get; set; }
+        public string PaymentSoundUrl { get; set; }
 
         [Display(Name = "Custom HTML title to display on Checkout page")]
         public string HtmlTitle { get; set; }
+
+        [Display(Name = "Support URL")]
+        [MaxLength(500)]
+        public string SupportUrl { get; set; }
+
+        [Display(Name = "Custom checkout text")]
+        [MaxLength(500)]
+        public string CheckoutText { get; set; }
 
         [Display(Name = "Show a timer … minutes before invoice expiration")]
         [Range(1, 60 * 24 * 24)]
@@ -115,18 +110,5 @@ namespace BTCPayServer.Models.StoreViewModels
             GreaterThan,
             LessThan
         }
-        public static string ToString(CriteriaType type)
-        {
-            switch (type)
-            {
-                case CriteriaType.GreaterThan:
-                    return "Greater than";
-                case CriteriaType.LessThan:
-                    return "Less than";
-                default:
-                    throw new ArgumentOutOfRangeException(nameof(type), type, null);
-            }
-        }
-
     }
 }

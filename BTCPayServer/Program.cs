@@ -1,9 +1,9 @@
 using System;
 using System.IO;
 using System.Linq;
-using System.Net;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Threading.Tasks;
 using BTCPayServer.Configuration;
 using BTCPayServer.Hosting;
 using BTCPayServer.Logging;
@@ -11,27 +11,33 @@ using BTCPayServer.Plugins;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 [assembly: InternalsVisibleTo("BTCPayServer.Tests")]
+
+// This helps JetBrains to find partial views referenced by views in plugins
+[assembly: JetBrains.Annotations.AspMvcAreaPartialViewLocationFormat("/Plugins/{2}/Views/Shared/{0}.cshtml")]
 
 namespace BTCPayServer
 {
     class Program
     {
-        static void Main(string[] args)
+        static async Task Main(string[] args)
         {
+            // Some old instances were not as strict into parsing public keys
+            // we don't want to break this.
+            NBitcoin.ExtPubKey.SkipInvalidMasterExtPubKeyCheck = true;
             if (args.Length > 0 && args[0] == "run")
                 args = args.Skip(1).ToArray(); // Hack to make dotnet watch work
 
-            ServicePointManager.DefaultConnectionLimit = 100;
-            IWebHost host = null;
+            IHost host = null;
             var processor = new ConsoleLoggerProcessor();
-            CustomConsoleLogProvider loggerProvider = new CustomConsoleLogProvider(processor);
+            var loggerProvider = new CustomConsoleLogProvider(processor);
             using var loggerFactory = new LoggerFactory();
             loggerFactory.AddProvider(loggerProvider);
             var logger = loggerFactory.CreateLogger("Configuration");
-            Logs logs = new Logs();
+            var logs = new Logs();
             logs.Configure(loggerFactory);
             IConfiguration conf = null;
             try
@@ -43,23 +49,34 @@ namespace BTCPayServer
                 confBuilder.AddJsonFile("appsettings.dev.json", true, false);
 #endif
                 conf = confBuilder.Build();
-                if (conf == null)
-                    return;
 
-                var builder = new WebHostBuilder()
-                    .UseKestrel()
-                    .UseConfiguration(conf)
+
+                var builder = Host.CreateDefaultBuilder(args)
                     .ConfigureLogging(l =>
                     {
                         l.AddFilter("Microsoft", LogLevel.Error);
                         if (!conf.GetOrDefault<bool>("verbose", false))
+                        {
                             l.AddFilter("Events", LogLevel.Warning);
+                            l.AddFilter("BTCPayServer.HostedServices", LogLevel.Warning);
+                        }
+
+                        // Uncomment this to see EF queries
+                        //l.AddFilter("Microsoft.EntityFrameworkCore.Database.Command", LogLevel.Trace);
+                        l.AddFilter("Microsoft.EntityFrameworkCore.Migrations", LogLevel.Information);
+                        l.AddFilter("BTCPayServer.Migrations", LogLevel.Information);
+                        l.AddFilter("BTCPayServer.Security", LogLevel.Warning);
                         l.AddFilter("System.Net.Http.HttpClient", LogLevel.Critical);
                         l.AddFilter("Microsoft.AspNetCore.Antiforgery.Internal", LogLevel.Critical);
                         l.AddFilter("Fido2NetLib.DistributedCacheMetadataService", LogLevel.Error);
+                        l.ClearProviders();
                         l.AddProvider(new CustomConsoleLogProvider(processor));
                     })
-                    .UseStartup<Startup>();
+                    .ConfigureSerilog(conf)
+                    .ConfigureWebHostDefaults(webBuilder =>
+                        webBuilder.UseKestrel()
+                        .UseConfiguration(conf)
+                        .UseStartup<Startup>());
 
                 // When we run the app with dotnet run (typically in dev env), the wwwroot isn't in the same directory
                 // than this assembly.
@@ -74,34 +91,42 @@ namespace BTCPayServer
                     builder.UseContentRoot(Directory.GetCurrentDirectory());
                 }
                 host = builder.Build();
-                host.StartWithTasksAsync().GetAwaiter().GetResult();
-                var urls = host.ServerFeatures.Get<IServerAddressesFeature>().Addresses;
+                await host.StartWithTasksAsync();
+                var urls = host.GetServerFeatures<IServerAddressesFeature>().Addresses;
                 foreach (var url in urls)
                 {
                     // Some tools such as dotnet watch parse this exact log to open the browser
                     logger.LogInformation("Now listening on: " + url);
                 }
-                host.WaitForShutdown();
+                await host.WaitForShutdownAsync();
             }
             catch (ConfigException ex)
             {
                 if (!string.IsNullOrEmpty(ex.Message))
                     logs.Configuration.LogError(ex.Message);
             }
-            catch (Exception e) when (PluginManager.IsExceptionByPlugin(e, out var pluginName))
+            catch (Exception e) when (PluginManager.IsExceptionByPlugin(e, out var plugin))
             {
-                logs.Configuration.LogError(e, $"Disabling plugin {pluginName} as it crashed on startup");
                 var pluginDir = new DataDirectories().Configure(conf).PluginDir;
-                PluginManager.DisablePlugin(pluginDir, pluginName);
+                // This happen when a plugin fails to resolve some dependencies in startup services
+                if (plugin.Instance.SystemPlugin && e.Source == "Microsoft.Extensions.DependencyInjection")
+                {
+                    logs.Configuration.LogError(e, "Plugin crash during startup detected. We couldn't figure out which plugin caused it, disabling all plugins.");
+                    PluginManager.DisablePlugins(pluginDir);
+                }
+                else
+                {
+                    logs.Configuration.LogError(e, $"Plugin crash during startup detected, disabling {plugin.Assembly.GetName().Name}...");
+                    PluginManager.DisablePlugin(pluginDir, plugin);
+                }
             }
             finally
             {
                 processor.Dispose();
                 if (host == null)
                     logs.Configuration.LogError("Configuration error");
-                if (host != null)
-                    host.Dispose();
-                Serilog.Log.CloseAndFlush();
+                host?.Dispose();
+                await Serilog.Log.CloseAndFlushAsync();
                 loggerProvider.Dispose();
             }
         }

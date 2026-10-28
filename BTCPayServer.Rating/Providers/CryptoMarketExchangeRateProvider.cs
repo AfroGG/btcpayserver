@@ -28,19 +28,22 @@ namespace BTCPayServer.Services.Rates
 
         public async Task<PairRate[]> GetRatesAsync(CancellationToken cancellationToken)
         {
-            var response = await _httpClient.GetAsync("https://api.exchange.cryptomkt.com/api/3/public/ticker/", cancellationToken);
+            using var response = await _httpClient.GetAsync("https://api.exchange.cryptomkt.com/api/3/public/ticker/", cancellationToken);
             var jobj = await response.Content.ReadAsAsync<JObject>(cancellationToken);
 
             return ((jobj as JObject) ?? new JObject())
                 .Properties()
                 .Where(p => SupportedPairs.Contains(p.Name))
                 .Select(p => new PairRate(CurrencyPair.Parse(p.Name), CreateBidAsk(p)))
+                .Where(p => p.BidAsk != null)
                 .ToArray();
         }
         private static BidAsk CreateBidAsk(JProperty p)
         {
-            var bid = decimal.Parse(p.Value["bid"].Value<string>(), System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture);
-            var ask = decimal.Parse(p.Value["ask"].Value<string>(), System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture);
+            if (p.Value["bid"]?.Type is JTokenType.Null || p.Value["ask"]?.Type is JTokenType.Null)
+                return new BidAsk(decimal.Parse(p.Value["last"]!.Value<string>(), System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture));
+            var bid = decimal.Parse(p.Value["bid"]!.Value<string>(), System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture);
+            var ask = decimal.Parse(p.Value["ask"]!.Value<string>(), System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture);
             if (bid > ask)
                 return null;
             return new BidAsk(bid, ask);

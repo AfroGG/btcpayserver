@@ -4,7 +4,6 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
-using System.Text;
 using BTCPayServer.Data;
 using CsvHelper.Configuration;
 using CsvHelper.Configuration.Attributes;
@@ -91,7 +90,7 @@ namespace BTCPayServer.Services.Wallets.Export
         {
             using StringWriter writer = new();
             using var csvWriter = new CsvHelper.CsvWriter(writer, new CsvConfiguration(CultureInfo.InvariantCulture), true);
-            csvWriter.Configuration.RegisterClassMap<ExportTransactionMap>();
+            csvWriter.Context.RegisterClassMap<ExportTransactionMap>();
             csvWriter.WriteHeader<ExportTransaction>();
             csvWriter.NextRecord();
             csvWriter.WriteRecords(invoices);
@@ -105,7 +104,7 @@ namespace BTCPayServer.Services.Wallets.Export
         public ExportTransactionMap()
         {
             AutoMap(CultureInfo.InvariantCulture);
-            Map(m => m.Labels).ConvertUsing(row => row.Labels == null ? string.Empty : string.Join(", ", row.Labels));
+            Map(m => m.Labels).Convert(row => row.Value.Labels == null ? string.Empty : string.Join(", ", row.Value.Labels));
         }
     }
 

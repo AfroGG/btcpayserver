@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using BTCPayServer.Data;
 using BTCPayServer.HostedServices;
 using BTCPayServer.Logging;
+using BTCPayServer.Payouts;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -46,16 +47,16 @@ public class PayoutProcessorService : EventHostedServiceBase
     {
         public PayoutProcessorQuery()
         {
-            
+
         }
-        public PayoutProcessorQuery(string storeId, string paymentMethod)
+        public PayoutProcessorQuery(string storeId, PayoutMethodId payoutMethodId)
         {
             Stores = new[] { storeId };
-            PaymentMethods = new[] { paymentMethod };
+            PayoutMethods = new[] { payoutMethodId };
         }
         public string[] Stores { get; set; }
         public string[] Processors { get; set; }
-        public string[] PaymentMethods { get; set; }
+        public PayoutMethodId[] PayoutMethods { get; set; }
     }
 
     public async Task<List<PayoutProcessorData>> GetProcessors(PayoutProcessorQuery query)
@@ -71,9 +72,10 @@ public class PayoutProcessorService : EventHostedServiceBase
         {
             queryable = queryable.Where(data => query.Stores.Contains(data.StoreId));
         }
-        if (query.PaymentMethods is not null)
+        if (query.PayoutMethods is not null)
         {
-            queryable = queryable.Where(data => query.PaymentMethods.Contains(data.PaymentMethod));
+            var paymentMethods = query.PayoutMethods.Select(d => d.ToString()).Distinct().ToArray();
+            queryable = queryable.Where(data => paymentMethods.Contains(data.PayoutMethodId));
         }
 
         return await queryable.ToListAsync();
@@ -143,11 +145,14 @@ public class PayoutProcessorService : EventHostedServiceBase
             }
             catch(Exception ex)
             {
-                Logs.PayServer.LogWarning(ex, $"Payout processor ({data.PaymentMethod}) failed to start. Skipping...");
+                Logs.PayServer.LogWarning(ex, $"Payout processor ({data.PayoutMethodId}) failed to start. Skipping...");
                 return;
             }
-            await processor.StartAsync(cancellationToken);
-            Services.TryAdd(data.Id, processor);
+            if (processor is not null)
+            {
+                await processor.StartAsync(cancellationToken);
+                Services.TryAdd(data.Id, processor);
+            }
         }
 
     }

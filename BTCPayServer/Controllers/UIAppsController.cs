@@ -8,51 +8,58 @@ using BTCPayServer.Abstractions.Models;
 using BTCPayServer.Client;
 using BTCPayServer.Data;
 using BTCPayServer.Models.AppViewModels;
+using BTCPayServer.Plugins.Wallets;
 using BTCPayServer.Services.Apps;
+using BTCPayServer.Services.Invoices;
 using BTCPayServer.Services.Stores;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Localization;
 using Microsoft.AspNetCore.Mvc.Rendering;
+using Microsoft.Extensions.Localization;
 
 namespace BTCPayServer.Controllers
 {
-    [AutoValidateAntiforgeryToken]
     [Route("apps")]
     public partial class UIAppsController : Controller
     {
         public UIAppsController(
-            UserManager<ApplicationUser> userManager,
+            PaymentMethodHandlerDictionary handlers,
+            BTCPayNetworkProvider networkProvider,
             StoreRepository storeRepository,
             IFileService fileService,
             AppService appService,
+            IStringLocalizer stringLocalizer,
+            ViewLocalizer viewLocalizer,
             IHtmlHelper html)
         {
-            _userManager = userManager;
+            _handlers = handlers;
+            _networkProvider = networkProvider;
             _storeRepository = storeRepository;
             _fileService = fileService;
             _appService = appService;
             Html = html;
+            StringLocalizer = stringLocalizer;
+            ViewLocalizer = viewLocalizer;
         }
 
-        private readonly UserManager<ApplicationUser> _userManager;
+        private readonly PaymentMethodHandlerDictionary _handlers;
+        private readonly BTCPayNetworkProvider _networkProvider;
         private readonly StoreRepository _storeRepository;
         private readonly IFileService _fileService;
         private readonly AppService _appService;
 
         public string CreatedAppId { get; set; }
         public IHtmlHelper Html { get; }
+        public IStringLocalizer StringLocalizer { get; }
+        public ViewLocalizer ViewLocalizer { get; }
 
         public class AppUpdated
         {
             public string AppId { get; set; }
             public object Settings { get; set; }
             public string StoreId { get; set; }
-            public override string ToString()
-            {
-                return string.Empty;
-            }
         }
 
         [HttpGet("/apps/{appId}")]
@@ -80,7 +87,7 @@ namespace BTCPayServer.Controllers
             bool archived = false
         )
         {
-            var store = GetCurrentStore();
+            var store = HttpContext.GetStoreData();
             var apps = (await _appService.GetAllApps(GetUserId(), false, store.Id, archived))
                 .Where(app => app.Archived == archived);
 
@@ -100,11 +107,11 @@ namespace BTCPayServer.Controllers
                 switch (sortOrder)
                 {
                     case "desc":
-                        ViewData[$"{sortOrderColumn}SortOrder"] = "asc";
+                        ViewData[$"{sortOrderColumn}NextSortOrder"] = "asc";
                         break;
                     case "asc":
                         apps = apps.Reverse();
-                        ViewData[$"{sortOrderColumn}SortOrder"] = "desc";
+                        ViewData[$"{sortOrderColumn}NextSortOrder"] = "desc";
                         break;
                 }
             }
@@ -132,12 +139,28 @@ namespace BTCPayServer.Controllers
         [HttpPost("/stores/{storeId}/apps/create/{appType?}")]
         public async Task<IActionResult> CreateApp(string storeId, CreateAppViewModel vm)
         {
-            var store = GetCurrentStore();
+            var store = HttpContext.GetStoreData();
+            if (!store.AnyPaymentMethodAvailable(_handlers))
+            {
+                object text = _networkProvider.DefaultNetwork?.CryptoCode switch
+                {
+                    null => StringLocalizer["To create a {0} app, you need to set up a wallet first", vm.AppType],
+                    {} cryptoCode => ViewLocalizer["To create a {0} app, you need to <a href='{1}' class='alert-link'>set up a wallet</a> first", vm.AppType, Url.Action(nameof(UIStoreOnChainWalletsController.SetupWallet), "UIStoreOnChainWallets", new { area = WalletsPlugin.Area, cryptoCode, storeId })!]
+                };
+                TempData.SetStatusMessageModel(new StatusMessageModel
+                {
+                    Severity = StatusMessageModel.StatusSeverity.Error,
+                    LocalizedHtml = text as LocalizedHtmlString,
+                    LocalizedMessage = text as LocalizedString,
+                    AllowDismiss = false
+                });
+                return View(vm);
+            }
             vm.StoreId = store.Id;
             var type = _appService.GetAppType(vm.AppType ?? vm.SelectedAppType);
             if (type is null)
             {
-                ModelState.AddModelError(nameof(vm.SelectedAppType), "Invalid App Type");
+                ModelState.AddModelError(nameof(vm.SelectedAppType), StringLocalizer["Invalid App Type"]);
             }
 
             if (!ModelState.IsValid)
@@ -156,7 +179,7 @@ namespace BTCPayServer.Controllers
             await _appService.SetDefaultSettings(appData, defaultCurrency);
             await _appService.UpdateOrCreateApp(appData);
 
-            TempData[WellKnownTempData.SuccessMessage] = "App successfully created";
+            TempData[WellKnownTempData.SuccessMessage] = StringLocalizer["App successfully created"].Value;
             CreatedAppId = appData.Id;
 
             var url = await type.ConfigureLink(appData);
@@ -171,7 +194,7 @@ namespace BTCPayServer.Controllers
             if (app == null)
                 return NotFound();
 
-            return View("Confirm", new ConfirmModel("Delete app", $"The app <strong>{Html.Encode(app.Name)}</strong> and its settings will be permanently deleted. Are you sure?", "Delete"));
+            return View("Confirm", new ConfirmModel(StringLocalizer["Delete app"], StringLocalizer["The app <strong>{0}</strong> and its settings will be permanently deleted. Are you sure?", Html.Encode(app.Name)], StringLocalizer["Delete"]));
         }
 
         [Authorize(Policy = Policies.CanModifyStoreSettings, AuthenticationSchemes = AuthenticationSchemes.Cookie)]
@@ -183,11 +206,11 @@ namespace BTCPayServer.Controllers
                 return NotFound();
 
             if (await _appService.DeleteApp(app))
-                TempData[WellKnownTempData.SuccessMessage] = "App deleted successfully.";
+                TempData[WellKnownTempData.SuccessMessage] = StringLocalizer["App deleted successfully."].Value;
 
             return RedirectToAction(nameof(UIStoresController.Dashboard), "UIStores", new { storeId = app.StoreDataId });
         }
-        
+
         [Authorize(Policy = Policies.CanModifyStoreSettings, AuthenticationSchemes = AuthenticationSchemes.Cookie)]
         [HttpPost("{appId}/archive")]
         public async Task<IActionResult> ToggleArchive(string appId)
@@ -195,7 +218,7 @@ namespace BTCPayServer.Controllers
             var app = GetCurrentApp();
             if (app == null)
                 return NotFound();
-            
+
             var type = _appService.GetAppType(app.AppType);
             if (type is null)
             {
@@ -206,14 +229,16 @@ namespace BTCPayServer.Controllers
             if (await _appService.SetArchived(app, archived))
             {
                 TempData[WellKnownTempData.SuccessMessage] = archived
-                    ? "The app has been archived and will no longer appear in the apps list by default."
-                    : "The app has been unarchived and will appear in the apps list by default again.";
+                    ? StringLocalizer["The app has been archived and will no longer appear in the apps list by default."].Value
+                    : StringLocalizer["The app has been unarchived and will appear in the apps list by default again."].Value;
             }
             else
             {
-                TempData[WellKnownTempData.ErrorMessage] = $"Failed to {(archived ? "archive" : "unarchive")} the app.";
+                TempData[WellKnownTempData.ErrorMessage] = archived
+                    ? StringLocalizer["Failed to archive the app."].Value
+                    : StringLocalizer["Failed to unarchive the app."].Value;
             }
-            
+
             var url = await type.ConfigureLink(app);
             return Redirect(url);
         }
@@ -224,22 +249,26 @@ namespace BTCPayServer.Controllers
         public async Task<IActionResult> FileUpload(IFormFile file)
         {
             var app = GetCurrentApp();
-            var userId = GetUserId();
+            var userId = User.GetIdOrNull();
             if (app is null || userId is null)
                 return NotFound();
 
+            if (!file.FileName.IsValidFileName())
+            {
+                return Json(new { error = StringLocalizer["Invalid file name"].Value });
+            }
             if (!file.ContentType.StartsWith("image/", StringComparison.InvariantCulture))
             {
-                return Json(new { error = "The file needs to be an image" });
+                return Json(new { error = StringLocalizer["The file needs to be an image"].Value });
             }
             if (file.Length > 500_000)
             {
-                return Json(new { error = "The image file size should be less than 0.5MB" });
+                return Json(new { error = StringLocalizer["The file size should be less than 0.5MB"].Value });
             }
             var formFile = await file.Bufferize();
             if (!FileTypeDetector.IsPicture(formFile.Buffer, formFile.FileName))
             {
-                return Json(new { error = "The file needs to be an image" });
+                return Json(new { error = StringLocalizer["The file needs to be an image"].Value });
             }
             try
             {
@@ -264,10 +293,8 @@ namespace BTCPayServer.Controllers
             return currency?.Trim().ToUpperInvariant();
         }
 
-        private string GetUserId() => _userManager.GetUserId(User);
+        private string GetUserId() => User.GetId();
 
-        private StoreData GetCurrentStore() => HttpContext.GetStoreData();
-
-        private AppData GetCurrentApp() => HttpContext.GetAppData();
+        private AppData GetCurrentApp() => HttpContext.GetAppDataOrNull();
     }
 }

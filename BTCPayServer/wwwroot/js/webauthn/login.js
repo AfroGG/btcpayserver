@@ -24,7 +24,7 @@ async function login(makeAssertionOptions) {
 }
 
 /**
- * Sends the credential to the the FIDO2 server for assertion
+ * Sends the credential to the FIDO2 server for assertion
  * @param {any} assertedCredential
  */
 async function verifyAssertionWithServer(assertedCredential) {
@@ -33,6 +33,7 @@ async function verifyAssertionWithServer(assertedCredential) {
     let clientDataJSON = new Uint8Array(assertedCredential.response.clientDataJSON);
     let rawId = new Uint8Array(assertedCredential.rawId);
     let sig = new Uint8Array(assertedCredential.response.signature);
+    let userHandle = assertedCredential.response.userHandle ? new Uint8Array(assertedCredential.response.userHandle) : null;
     const data = {
         id: assertedCredential.id,
         rawId: coerceToBase64Url(rawId),
@@ -40,8 +41,9 @@ async function verifyAssertionWithServer(assertedCredential) {
         extensions: assertedCredential.getClientExtensionResults(),
         response: {
             authenticatorData: coerceToBase64Url(authData),
-            clientDataJson: coerceToBase64Url(clientDataJSON),
-            signature: coerceToBase64Url(sig)
+            clientDataJSON: coerceToBase64Url(clientDataJSON),
+            signature: coerceToBase64Url(sig),
+            userHandle: userHandle ? coerceToBase64Url(userHandle): null
         }
     };
 

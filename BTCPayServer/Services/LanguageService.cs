@@ -4,14 +4,12 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
-using BTCPayServer.Client.Models;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Rendering;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
-using Newtonsoft.Json.Serialization;
 
 namespace BTCPayServer.Services
 {
@@ -36,7 +34,7 @@ namespace BTCPayServer.Services
         {
             _logger = logger;
             var path = environment.WebRootPath;
-            path = Path.Combine(path, "locales");
+            path = Path.Combine(path, "locales", "checkout");
             var files = Directory.GetFiles(path, "*.json");
             var result = new List<Language>();
             foreach (var file in files)

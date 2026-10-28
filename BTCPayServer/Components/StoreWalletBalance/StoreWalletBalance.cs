@@ -1,61 +1,42 @@
 #nullable enable
 using System;
-using System.Collections.Generic;
-using System.Data.Common;
-using System.Globalization;
-using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using BTCPayServer.Client.Models;
 using BTCPayServer.Data;
-using BTCPayServer.Services;
+using BTCPayServer.Services.Invoices;
 using BTCPayServer.Services.Rates;
-using BTCPayServer.Services.Stores;
 using BTCPayServer.Services.Wallets;
-using Dapper;
-using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
-using NBitcoin;
-using NBXplorer;
-using NBXplorer.Client;
+using Microsoft.AspNetCore.Mvc.ViewComponents;
+using Microsoft.AspNetCore.Mvc.ViewFeatures;
+using StoreData = BTCPayServer.Data.StoreData;
 
 namespace BTCPayServer.Components.StoreWalletBalance;
 
-public class StoreWalletBalance : ViewComponent
+public class StoreWalletBalance(
+    CurrencyNameTable currencies,
+    WalletHistogramService walletHistogramService,
+    BTCPayWalletProvider walletProvider,
+    BTCPayNetworkProvider networkProvider,
+    PaymentMethodHandlerDictionary handlers)
+    : ViewComponent
 {
-    private const WalletHistogramType DefaultType = WalletHistogramType.Week;
-
-    private readonly StoreRepository _storeRepo;
-    private readonly CurrencyNameTable _currencies;
-    private readonly WalletHistogramService _walletHistogramService;
-    private readonly BTCPayWalletProvider _walletProvider;
-    private readonly BTCPayNetworkProvider _networkProvider;
-
-    public StoreWalletBalance(
-        StoreRepository storeRepo,
-        CurrencyNameTable currencies,
-        WalletHistogramService walletHistogramService,
-        BTCPayWalletProvider walletProvider,
-        BTCPayNetworkProvider networkProvider)
+    private const HistogramType DefaultType = HistogramType.Week;
+    public async Task<IViewComponentResult> InvokeAsync(StoreData store, string? cryptoCode = null)
     {
-        _storeRepo = storeRepo;
-        _currencies = currencies;
-        _walletProvider = walletProvider;
-        _walletHistogramService = walletHistogramService;
-        _networkProvider = networkProvider;
-    }
-
-    public async Task<IViewComponentResult> InvokeAsync(StoreData store)
-    {
-        var cryptoCode = _networkProvider.DefaultNetwork.CryptoCode;
+        cryptoCode ??= networkProvider.DefaultNetwork?.CryptoCode;
+        if (cryptoCode is null)
+            return new HtmlContentViewComponentResult(new StringHtmlContent(string.Empty));
         var walletId = new WalletId(store.Id, cryptoCode);
-        var data = await _walletHistogramService.GetHistogram(store, walletId, DefaultType);
+        var data = await walletHistogramService.GetHistogram(store, walletId, DefaultType);
         var defaultCurrency = store.GetStoreBlob().DefaultCurrency;
 
         var vm = new StoreWalletBalanceViewModel
         {
-            Store = store,
+            StoreId = store.Id,
             CryptoCode = cryptoCode,
-            CurrencyData = _currencies.GetCurrencyData(defaultCurrency, true),
+            CurrencyData = currencies.GetCurrencyData(defaultCurrency, true),
             DefaultCurrency = defaultCurrency,
             WalletId = walletId,
             Type = DefaultType
@@ -70,12 +51,17 @@ public class StoreWalletBalance : ViewComponent
         else
         {
             using CancellationTokenSource cts = new(TimeSpan.FromSeconds(3));
-            var wallet = _walletProvider.GetWallet(_networkProvider.DefaultNetwork);
-            var derivation = store.GetDerivationSchemeSettings(_networkProvider, walletId.CryptoCode);
-            if (derivation is not null)
+            var wallet = walletProvider.GetWallet(cryptoCode);
+            var derivation = store.GetDerivationSchemeSettings(handlers, walletId.CryptoCode);
+            var handler = handlers.TryGetBitcoinHandler(walletId.CryptoCode);
+            if (wallet is not null && derivation is not null && handler is not null)
             {
                 var balance = await wallet.GetBalance(derivation.AccountDerivation, cts.Token);
-                vm.Balance = balance.Available.GetValue(derivation.Network);
+                vm.Balance = balance.Available.GetValue(handler.Network);
+            }
+            else
+            {
+                vm.MissingWalletConfig = true;
             }
         }
 

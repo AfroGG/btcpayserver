@@ -8,10 +8,9 @@ using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
 using BTCPayServer.Abstractions.Contracts;
-using McMaster.NETCore.Plugins;
+using BTCPayServer.Plugins.Dotnet;
 using NBitcoin.Crypto;
 using NBitcoin.DataEncoders;
-using NBitcoin.Secp256k1;
 
 namespace BTCPayServer.PluginPacker
 {
@@ -109,9 +108,22 @@ namespace BTCPayServer.PluginPacker
 
         private static Type[] GetAllExtensionTypesFromAssembly(Assembly assembly)
         {
-            return assembly.GetTypes().Where(type =>
+            return GetLoadableTypes(assembly).Where(type =>
                 typeof(IBTCPayServerPlugin).IsAssignableFrom(type) &&
                 !type.IsAbstract).ToArray();
+        }
+        static Type[] GetLoadableTypes(Assembly assembly)
+        {
+            if (assembly == null)
+                throw new ArgumentNullException(nameof(assembly));
+            try
+            {
+                return assembly.GetTypes();
+            }
+            catch (ReflectionTypeLoadException e)
+            {
+                return e.Types.Where(t => t != null).ToArray();
+            }
         }
     }
 }

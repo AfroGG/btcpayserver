@@ -21,7 +21,6 @@ namespace BTCPayServer.Client.Models
         public JObject Metadata { get; set; }
         public CheckoutOptions Checkout { get; set; } = new CheckoutOptions();
         public ReceiptOptions Receipt { get; set; } = new ReceiptOptions();
-
         public class ReceiptOptions
         {
             public bool? Enabled { get; set; }
@@ -83,9 +82,7 @@ namespace BTCPayServer.Client.Models
             public string RedirectURL { get; set; }
 
             public bool? RedirectAutomatically { get; set; }
-            public bool? RequiresRefundEmail { get; set; } = null;
             public string DefaultLanguage { get; set; }
-            public CheckoutType? CheckoutType { get; set; }
             public bool? LazyPaymentMethods { get; set; }
         }
     }
@@ -95,6 +92,8 @@ namespace BTCPayServer.Client.Models
         public string StoreId { get; set; }
         [JsonConverter(typeof(NumericStringJsonConverter))]
         public decimal Amount { get; set; }
+        [JsonConverter(typeof(NumericStringJsonConverter))]
+        public decimal PaidAmount { get; set; }
         public string CheckoutLink { get; set; }
         [JsonConverter(typeof(StringEnumConverter))]
         public InvoiceStatus Status { get; set; }
@@ -109,7 +108,10 @@ namespace BTCPayServer.Client.Models
         [JsonProperty(ItemConverterType = typeof(StringEnumConverter))]
         public InvoiceStatus[] AvailableStatusesForManualMarking { get; set; }
         public bool Archived { get; set; }
+        [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
+        public InvoicePaymentMethodDataModel[] PaymentMethods { get; set; } = Array.Empty<InvoicePaymentMethodDataModel>();
     }
+
     public enum InvoiceStatus
     {
         New,

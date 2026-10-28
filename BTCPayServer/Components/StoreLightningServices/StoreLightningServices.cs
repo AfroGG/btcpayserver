@@ -2,48 +2,46 @@ using System;
 using System.Linq;
 using System.Threading.Tasks;
 using BTCPayServer.Abstractions.Extensions;
+using BTCPayServer.Client;
 using BTCPayServer.Configuration;
 using BTCPayServer.Data;
-using BTCPayServer.Lightning;
 using BTCPayServer.Models;
 using BTCPayServer.Models.StoreViewModels;
 using BTCPayServer.Payments;
 using BTCPayServer.Payments.Lightning;
-using BTCPayServer.Services;
-using BTCPayServer.Services.Stores;
+using BTCPayServer.Security;
+using BTCPayServer.Services.Invoices;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
 
 namespace BTCPayServer.Components.StoreLightningServices;
 
-public class StoreLightningServices : ViewComponent
+public class StoreLightningServices(
+    BTCPayServerOptions btcpayServerOptions,
+    IAuthorizationService authorizationService,
+    PaymentMethodHandlerDictionary handlers,
+    IOptions<LightningNetworkOptions> lightningNetworkOptions,
+    IOptions<ExternalServicesOptions> externalServiceOptions)
+    : ViewComponent
 {
-    private readonly BTCPayServerOptions _btcpayServerOptions;
-    private readonly BTCPayNetworkProvider _networkProvider;
-    private readonly IOptions<ExternalServicesOptions> _externalServiceOptions;
-
-    public StoreLightningServices(
-        BTCPayNetworkProvider networkProvider,
-        BTCPayServerOptions btcpayServerOptions,
-        IOptions<ExternalServicesOptions> externalServiceOptions)
+    public async Task<IViewComponentResult> InvokeAsync(StoreData store, string cryptoCode)
     {
-        _networkProvider = networkProvider;
-        _btcpayServerOptions = btcpayServerOptions;
-        _externalServiceOptions = externalServiceOptions;
-    }
+        var vm = new StoreLightningServicesViewModel { StoreId = store.Id, CryptoCode = cryptoCode };
+        var id = PaymentTypes.LN.GetPaymentMethodId(cryptoCode);
+        var existing = store.GetPaymentMethodConfig<LightningPaymentMethodConfig>(id, handlers);
+        if (existing?.IsInternalNode is true && lightningNetworkOptions.Value.InternalLightningByCryptoCode.TryGetValue(cryptoCode, out _))
+        {
+            var result = await authorizationService.AuthorizeAsync(HttpContext.User, null, new PolicyRequirement(Policies.CanUseInternalLightningNode));
+            vm.LightningNodeType = result.Succeeded ? LightningNodeType.Internal : null;
+        }
 
-    public IViewComponentResult Invoke(StoreLightningServicesViewModel vm)
-    {
-        if (vm.Store == null)
-            throw new ArgumentNullException(nameof(vm.Store));
-        if (vm.CryptoCode == null)
-            throw new ArgumentNullException(nameof(vm.CryptoCode));
         if (vm.LightningNodeType != LightningNodeType.Internal)
             return View(vm);
         if (!User.IsInRole(Roles.ServerAdmin))
             return View(vm);
 
-        var services = _externalServiceOptions.Value.ExternalServices.ToList()
+        var services = externalServiceOptions.Value.ExternalServices.ToList()
             .Where(service => ExternalServices.LightningServiceTypes.Contains(service.Type))
             .Select(async service =>
             {
@@ -56,7 +54,7 @@ public class StoreLightningServices : ViewComponent
                 };
                 try
                 {
-                    model.Link = await service.GetLink(Request.GetAbsoluteUriNoPathBase(), _btcpayServerOptions.NetworkType);
+                    model.Link = await service.GetLink(Request.GetAbsoluteUriNoPathBase(), btcpayServerOptions.NetworkType);
                 }
                 catch (Exception exception)
                 {
@@ -68,7 +66,7 @@ public class StoreLightningServices : ViewComponent
             .ToList();
 
         // other services
-        foreach ((string key, Uri value) in _externalServiceOptions.Value.OtherExternalServices)
+        foreach (var (key, value) in externalServiceOptions.Value.OtherExternalServices)
         {
             if (ExternalServices.LightningServiceNames.Contains(key))
             {

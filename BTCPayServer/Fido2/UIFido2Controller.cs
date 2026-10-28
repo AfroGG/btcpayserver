@@ -1,45 +1,38 @@
 using System.Threading.Tasks;
+using BTCPayServer.Abstractions.Constants;
 using BTCPayServer.Abstractions.Extensions;
 using BTCPayServer.Abstractions.Models;
-using BTCPayServer.Data;
+using BTCPayServer.Client;
 using BTCPayServer.Fido2.Models;
-using BTCPayServer.Models;
-using Fido2NetLib;
 using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
-using Newtonsoft.Json.Linq;
+using Microsoft.Extensions.Localization;
 
 namespace BTCPayServer.Fido2
 {
     [Route("fido2")]
-    [Authorize]
-    public class UIFido2Controller : Controller
+    [Authorize(AuthenticationSchemes = AuthenticationSchemes.Cookie, Policy = Policies.CanViewProfile)]
+    public class UIFido2Controller(
+        Fido2Service fido2Service,
+        IStringLocalizer stringLocalizer) : Controller
     {
-        private readonly UserManager<ApplicationUser> _userManager;
-        private readonly Fido2Service _fido2Service;
-
-        public UIFido2Controller(UserManager<ApplicationUser> userManager, Fido2Service fido2Service)
-        {
-            _userManager = userManager;
-            _fido2Service = fido2Service;
-        }
+        private IStringLocalizer StringLocalizer { get; } = stringLocalizer;
 
         [HttpGet("{id}/delete")]
         public IActionResult Remove(string id)
         {
-            return View("Confirm", new ConfirmModel("Remove security device", "Your account will no longer have this security device as an option for two-factor authentication.", "Remove"));
+            return View("Confirm", new ConfirmModel(StringLocalizer["Remove security device"], StringLocalizer["Your account will no longer have this security device as an option for two-factor authentication."], StringLocalizer["Delete"]));
         }
 
         [HttpPost("{id}/delete")]
         public async Task<IActionResult> RemoveP(string id)
         {
-            await _fido2Service.Remove(id, _userManager.GetUserId(User));
+            await fido2Service.Remove(id, User.GetId());
 
             TempData.SetStatusMessageModel(new StatusMessageModel
             {
                 Severity = StatusMessageModel.StatusSeverity.Success,
-                Html = "The security device was removed successfully."
+                Html = StringLocalizer["The security device was removed successfully."].Value
             });
 
             return RedirectToList();
@@ -48,13 +41,13 @@ namespace BTCPayServer.Fido2
         [HttpGet("register")]
         public async Task<IActionResult> Create(AddFido2CredentialViewModel viewModel)
         {
-            var options = await _fido2Service.RequestCreation(_userManager.GetUserId(User));
+            var options = await fido2Service.RequestCreation(User.GetId());
             if (options is null)
             {
                 TempData.SetStatusMessageModel(new StatusMessageModel
                 {
                     Severity = StatusMessageModel.StatusSeverity.Error,
-                    Html = "The security device could not be registered."
+                    Html = StringLocalizer["The security device could not be registered."].Value
                 });
 
                 return RedirectToList();
@@ -67,13 +60,13 @@ namespace BTCPayServer.Fido2
         [HttpPost("register")]
         public async Task<IActionResult> CreateResponse([FromForm] string data, [FromForm] string name)
         {
-            if (await _fido2Service.CompleteCreation(_userManager.GetUserId(User), name, data))
+            if (await fido2Service.CompleteCreation(User.GetId(), name, data))
             {
 
                 TempData.SetStatusMessageModel(new StatusMessageModel
                 {
                     Severity = StatusMessageModel.StatusSeverity.Success,
-                    Html = "The security device was registered successfully."
+                    Html = StringLocalizer["The security device was registered successfully."].Value
                 });
             }
             else
@@ -81,7 +74,7 @@ namespace BTCPayServer.Fido2
                 TempData.SetStatusMessageModel(new StatusMessageModel
                 {
                     Severity = StatusMessageModel.StatusSeverity.Error,
-                    Html = "The security device could not be registered."
+                    Html = StringLocalizer["The security device could not be registered."].Value
                 });
             }
 

@@ -1,15 +1,28 @@
 function confirmCopy(el, message) {
-    const hasIcon = !!el.innerHTML.match('icon-copy')
+    if (el.dataset.clipboardConfirming) return;
+    const hasIcon = !!el.innerHTML.match('icon-actions-copy')
+    const confirmMessage = document.createElement('span');
+    confirmMessage.className = 'text-success';
+    confirmMessage.textContent = message;
     if (hasIcon) {
-        el.innerHTML = el.innerHTML.replace('#copy', '#checkmark');
+        el.innerHTML = el.innerHTML.replace('#actions-copy', '#checkmark');
+    } else {
+        const { width, height } = el.getBoundingClientRect();
+        el.dataset.clipboardInitial = el.innerHTML;
+        el.style.minWidth = width + 'px';
+        el.style.minHeight = height + 'px';
+        el.textContent = '';
+        el.appendChild(confirmMessage);
     }
-    el.dataset.clipboardConfirming = true;
+    el.dataset.clipboardConfirming = 'true';
     if (el.dataset.clipboardHandler) {
         clearTimeout(parseInt(el.dataset.clipboardHandler));
     }
     const timeoutId = setTimeout(function () {
         if (hasIcon) {
-            el.innerHTML = el.innerHTML.replace('#checkmark', '#copy');
+            el.innerHTML = el.innerHTML.replace('#checkmark', '#actions-copy');
+        } else if (el.dataset.clipboardInitial) {
+            el.innerHTML = el.dataset.clipboardInitial;
         }
         delete el.dataset.clipboardConfirming;
         el.dataset.clipboardHandler = null;
@@ -21,7 +34,7 @@ window.copyToClipboard = async function (e, data) {
     e.preventDefault();
     const item = e.target.closest('[data-clipboard]') || e.target.closest('[data-clipboard-target]') || e.target;
     const confirm = item.dataset.clipboardConfirmElement
-        ? document.getElementById(item.dataset.clipboardConfirmElement) || item
+        ? document.querySelector(item.dataset.clipboardConfirmElement) || item
         : item.querySelector('[data-clipboard-confirm]') || item;
     const message = confirm.getAttribute('data-clipboard-confirm') || 'Copied';
     // Check compatibility and permissions:

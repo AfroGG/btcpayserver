@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -8,83 +7,67 @@ using BTCPayServer.Abstractions.Extensions;
 using BTCPayServer.Abstractions.Models;
 using BTCPayServer.Client;
 using BTCPayServer.Client.Models;
+using BTCPayServer.Controllers.Greenfield;
 using BTCPayServer.Data;
 using BTCPayServer.HostedServices;
 using BTCPayServer.Models;
 using BTCPayServer.Models.WalletViewModels;
 using BTCPayServer.Payments;
+using BTCPayServer.Payouts;
 using BTCPayServer.Services;
 using BTCPayServer.Services.Rates;
 using BTCPayServer.Services.Stores;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using NBitcoin;
+using Microsoft.Extensions.Localization;
 
 namespace BTCPayServer.Controllers
 {
-    public class UIPullPaymentController : Controller
+    public class UIPullPaymentController(
+        ApplicationDbContextFactory dbContextFactory,
+        CurrencyNameTable currencyNameTable,
+        DisplayFormatter displayFormatter,
+        UriResolver uriResolver,
+        PullPaymentHostedService pullPaymentHostedService,
+        BTCPayNetworkProvider networkProvider,
+        BTCPayNetworkJsonSerializerSettings serializerSettings,
+        PayoutMethodHandlerDictionary payoutHandlers,
+        StoreRepository storeRepository,
+        IStringLocalizer stringLocalizer)
+        : Controller
     {
-        private readonly ApplicationDbContextFactory _dbContextFactory;
-        private readonly CurrencyNameTable _currencyNameTable;
-        private readonly DisplayFormatter _displayFormatter;
-        private readonly PullPaymentHostedService _pullPaymentHostedService;
-        private readonly BTCPayNetworkProvider _networkProvider;
-        private readonly BTCPayNetworkJsonSerializerSettings _serializerSettings;
-        private readonly IEnumerable<IPayoutHandler> _payoutHandlers;
-        private readonly StoreRepository _storeRepository;
-
-        public UIPullPaymentController(ApplicationDbContextFactory dbContextFactory,
-            CurrencyNameTable currencyNameTable,
-            DisplayFormatter displayFormatter,
-            PullPaymentHostedService pullPaymentHostedService,
-            BTCPayNetworkProvider networkProvider,
-            BTCPayNetworkJsonSerializerSettings serializerSettings,
-            IEnumerable<IPayoutHandler> payoutHandlers,
-            StoreRepository storeRepository)
-        {
-            _dbContextFactory = dbContextFactory;
-            _currencyNameTable = currencyNameTable;
-            _displayFormatter = displayFormatter;
-            _pullPaymentHostedService = pullPaymentHostedService;
-            _serializerSettings = serializerSettings;
-            _payoutHandlers = payoutHandlers;
-            _storeRepository = storeRepository;
-            _networkProvider = networkProvider;
-        }
+        public IStringLocalizer StringLocalizer { get; } = stringLocalizer;
 
         [AllowAnonymous]
         [HttpGet("pull-payments/{pullPaymentId}")]
         public async Task<IActionResult> ViewPullPayment(string pullPaymentId)
         {
-            using var ctx = _dbContextFactory.CreateContext();
+            using var ctx = dbContextFactory.CreateContext();
             var pp = await ctx.PullPayments.FindAsync(pullPaymentId);
-            if (pp is null)
+            if (pp is null || networkProvider.DefaultNetwork?.CryptoCode is not {} cryptoCode)
                 return NotFound();
 
-            var blob = pp.GetBlob();
-            var store = await _storeRepository.FindStore(pp.StoreId);
+            var store = await storeRepository.FindStore(pp.StoreId);
             if (store is null)
                 return NotFound();
 
             var storeBlob = store.GetStoreBlob();
-            var payouts = (await ctx.Payouts.GetPayoutInPeriod(pp)
+            var payouts = (await ctx.Payouts.Where(p => p.PullPaymentDataId == pp.Id)
                     .OrderByDescending(o => o.Date)
                     .ToListAsync())
                 .Select(o => new
                 {
                     Entity = o,
-                    Blob = o.GetBlob(_serializerSettings),
-                    ProofBlob = _payoutHandlers.FindPayoutHandler(o.GetPaymentMethodId())?.ParseProof(o)
-                });
-            var cd = _currencyNameTable.GetCurrencyData(blob.Currency, false);
-            var totalPaid = payouts.Where(p => p.Entity.State != PayoutState.Cancelled).Select(p => p.Blob.Amount).Sum();
-            var amountDue = blob.Limit - totalPaid;
+                    Blob = o.GetBlob(serializerSettings),
+                    ProofBlob = payoutHandlers.TryGet(o.GetPayoutMethodId())?.ParseProof(o)
+                }).ToList();
+            var cd = currencyNameTable.GetCurrencyData(pp.Currency, false);
+            var totalPaid = payouts.Where(p => p.Entity.State != PayoutState.Cancelled).Select(p => p.Entity.OriginalAmount).Sum();
+            var amountDue = pp.Limit - totalPaid;
 
             ViewPullPaymentModel vm = new(pp, DateTimeOffset.UtcNow)
             {
-                BrandColor = storeBlob.BrandColor,
-                CssFileId = storeBlob.CssFileId,
                 AmountCollected = totalPaid,
                 AmountDue = amountDue,
                 ClaimedAmount = amountDue,
@@ -94,33 +77,47 @@ namespace BTCPayServer.Controllers
                 Payouts = payouts.Select(entity => new ViewPullPaymentModel.PayoutLine
                 {
                     Id = entity.Entity.Id,
-                    Amount = entity.Blob.Amount,
-                    AmountFormatted = _displayFormatter.Currency(entity.Blob.Amount, blob.Currency),
-                    Currency = blob.Currency,
+                    Amount = entity.Entity.OriginalAmount,
+                    AmountFormatted = displayFormatter.Currency(entity.Entity.OriginalAmount, entity.Entity.OriginalCurrency),
+                    Currency = entity.Entity.OriginalCurrency,
                     Status = entity.Entity.State,
                     Destination = entity.Blob.Destination,
-                    PaymentMethod = PaymentMethodId.Parse(entity.Entity.PaymentMethodId),
+                    PaymentMethod = PaymentMethodId.Parse(entity.Entity.PayoutMethodId),
                     Link = entity.ProofBlob?.Link,
                     TransactionId = entity.ProofBlob?.Id
                 }).ToList()
             };
             vm.IsPending &= vm.AmountDue > 0.0m;
-            
-            if (_pullPaymentHostedService.SupportsLNURL(blob))
+            vm.StoreBranding = await StoreBrandingViewModel.CreateAsync(Request, uriResolver, storeBlob);
+
+            if (pullPaymentHostedService.SupportsLNURL(pp))
             {
-                var url = Url.Action("GetLNURLForPullPayment", "UILNURL", new { cryptoCode = _networkProvider.DefaultNetwork.CryptoCode, pullPaymentId = vm.Id }, Request.Scheme, Request.Host.ToString());
+                var url = Url.Action(nameof(UILNURLController.GetLNURLForPullPayment), "UILNURL", new { cryptoCode, pullPaymentId = vm.Id }, Request.Scheme, Request.Host.ToString());
                 vm.LnurlEndpoint = url != null ? new Uri(url) : null;
+                vm.SetupDeepLink = $"boltcard://program?url={GetBoltcardDeeplinkUrl(vm, OnExistingBehavior.UpdateVersion)}";
+                vm.ResetDeepLink = $"boltcard://reset?url={GetBoltcardDeeplinkUrl(vm, OnExistingBehavior.KeepVersion)}";
             }
-            
+
             return View(nameof(ViewPullPayment), vm);
+        }
+
+        private string GetBoltcardDeeplinkUrl(ViewPullPaymentModel vm, OnExistingBehavior onExisting)
+        {
+            var registerUrl = Url.Action(nameof(GreenfieldPullPaymentController.RegisterBoltcard), "GreenfieldPullPayment",
+                            new
+                            {
+                                pullPaymentId = vm.Id,
+                                onExisting = onExisting.ToString()
+                            }, Request.Scheme, Request.Host.ToString()) ?? "";
+            registerUrl = Uri.EscapeDataString(registerUrl);
+            return registerUrl;
         }
 
         [HttpGet("stores/{storeId}/pull-payments/edit/{pullPaymentId}")]
         [Authorize(Policy = Policies.CanModifyStoreSettings, AuthenticationSchemes = AuthenticationSchemes.Cookie)]
         public async Task<IActionResult> EditPullPayment(string storeId, string pullPaymentId)
         {
-            using var ctx = _dbContextFactory.CreateContext();
-            Data.PullPaymentData pp = await ctx.PullPayments.FindAsync(pullPaymentId);
+            var pp = HttpContext.GetPullPaymentDataOrNull();
             if (pp == null && !string.IsNullOrEmpty(pullPaymentId))
             {
                 return NotFound();
@@ -134,14 +131,11 @@ namespace BTCPayServer.Controllers
         [Authorize(Policy = Policies.CanModifyStoreSettings, AuthenticationSchemes = AuthenticationSchemes.Cookie)]
         public async Task<IActionResult> EditPullPayment(string storeId, string pullPaymentId, UpdatePullPaymentModel viewModel)
         {
-            using var ctx = _dbContextFactory.CreateContext();
-
-            var pp = await ctx.PullPayments.FindAsync(pullPaymentId);
-            if (pp == null && !string.IsNullOrEmpty(pullPaymentId))
-            {
+            await using var ctx = dbContextFactory.CreateContext();
+            var pp = HttpContext.GetPullPaymentDataOrNull();
+            if (pp == null)
                 return NotFound();
-            }
-
+            ctx.Attach(pp);
             if (!ModelState.IsValid)
             {
                 return View(viewModel);
@@ -150,13 +144,11 @@ namespace BTCPayServer.Controllers
             var blob = pp.GetBlob();
             blob.Description = viewModel.Description ?? string.Empty;
             blob.Name = viewModel.Name ?? string.Empty;
-            blob.View = new PullPaymentBlob.PullPaymentView()
+            blob.View = new PullPaymentBlob.PullPaymentView
             {
                 Title = viewModel.Name ?? string.Empty,
                 Description = viewModel.Description ?? string.Empty,
-                CustomCSSLink = viewModel.CustomCSSLink,
-                Email = null,
-                EmbeddedCSS = viewModel.EmbeddedCSS,
+                Email = null
             };
 
             pp.SetBlob(blob);
@@ -165,7 +157,7 @@ namespace BTCPayServer.Controllers
 
             TempData.SetStatusMessageModel(new StatusMessageModel
             {
-                Message = "Pull payment updated successfully",
+                Message = StringLocalizer["Pull payment updated successfully"].Value,
                 Severity = StatusMessageModel.StatusSeverity.Success
             });
 
@@ -173,63 +165,72 @@ namespace BTCPayServer.Controllers
         }
 
         [AllowAnonymous]
-        [HttpPost("pull-payments/{pullPaymentId}/claim")]
+        [HttpPost("pull-payments/{pullPaymentId}")]
         public async Task<IActionResult> ClaimPullPayment(string pullPaymentId, ViewPullPaymentModel vm, CancellationToken cancellationToken)
         {
-            await using var ctx = _dbContextFactory.CreateContext();
+			if (vm.ClaimedAmount == 0)
+				vm.ClaimedAmount = null;
+
+			await using var ctx = dbContextFactory.CreateContext();
             var pp = await ctx.PullPayments.FindAsync(pullPaymentId);
             if (pp is null)
             {
-                ModelState.AddModelError(nameof(pullPaymentId), "This pull payment does not exists");
+                ModelState.AddModelError(nameof(pullPaymentId), StringLocalizer["This pull payment does not exists"]);
             }
 
             if (string.IsNullOrEmpty(vm.Destination))
             {
-                ModelState.AddModelError(nameof(vm.Destination), "Please provide a destination");
+                ModelState.AddModelError(nameof(vm.Destination), StringLocalizer["Please provide a destination"]);
                 return await ViewPullPayment(pullPaymentId);
             }
 
             var ppBlob = pp.GetBlob();
-            var supported = ppBlob.SupportedPaymentMethods;
-            PaymentMethodId paymentMethodId = null;
+            var supported = ppBlob.SupportedPayoutMethods;
+            PayoutMethodId payoutMethodId = null;
             IClaimDestination destination = null;
-            if (string.IsNullOrEmpty(vm.SelectedPaymentMethod))
+            IPayoutHandler payoutHandler = null;
+            string error = null;
+            if (string.IsNullOrEmpty(vm.SelectedPayoutMethod))
             {
                 foreach (var pmId in supported)
                 {
-                    var handler = _payoutHandlers.FindPayoutHandler(pmId);
+                    var handler = payoutHandlers.TryGet(pmId);
                     (IClaimDestination dst, string err) = handler == null
-                        ? (null, "No payment handler found for this payment method")
-                        : await handler.ParseAndValidateClaimDestination(pmId, vm.Destination, ppBlob, cancellationToken);
+                        ? (null, StringLocalizer["No payment handler found for this payment method"])
+                        : await handler.ParseAndValidateClaimDestination(vm.Destination, ppBlob, cancellationToken);
+                    error = err;
                     if (dst is not null && err is null)
                     {
-                        paymentMethodId = pmId;
+                        payoutMethodId = pmId;
                         destination = dst;
+                        payoutHandler = handler;
                         break;
                     }
                 }
             }
             else
             {
-                paymentMethodId = supported.FirstOrDefault(id => vm.SelectedPaymentMethod == id.ToString());
-                var payoutHandler = paymentMethodId is null ? null : _payoutHandlers.FindPayoutHandler(paymentMethodId);
-                destination = payoutHandler is null ? null : (await payoutHandler.ParseAndValidateClaimDestination(paymentMethodId, vm.Destination, ppBlob, cancellationToken)).destination;
+                payoutMethodId = supported.FirstOrDefault(id => vm.SelectedPayoutMethod == id.ToString());
+                payoutHandler = payoutMethodId is null ? null : payoutHandlers.TryGet(payoutMethodId);
+                if (payoutHandler is not null)
+                {
+                    (destination, error) = await payoutHandler.ParseAndValidateClaimDestination(vm.Destination, ppBlob, cancellationToken);
+                }
             }
 
             if (destination is null)
             {
-                ModelState.AddModelError(nameof(vm.Destination), "Invalid destination or payment method");
+                ModelState.AddModelError(nameof(vm.Destination), error ?? StringLocalizer["Invalid destination or payment method"]);
                 return await ViewPullPayment(pullPaymentId);
             }
-            
-            var amtError = ClaimRequest.IsPayoutAmountOk(destination, vm.ClaimedAmount == 0? null: vm.ClaimedAmount, paymentMethodId.CryptoCode, ppBlob.Currency);
-            if (amtError.error is not null)
+            var claimedAmount = ClaimRequest.GetClaimedAmount(destination, vm.ClaimedAmount, payoutHandler.Currency, pp.Currency);
+            if (claimedAmount is ClaimRequest.ClaimedAmountResult.Error err2)
             {
-                ModelState.AddModelError(nameof(vm.ClaimedAmount), amtError.error );
+                ModelState.AddModelError(nameof(vm.ClaimedAmount), err2.Message);
             }
-            else if (amtError.amount is not null)
+            else if (claimedAmount is ClaimRequest.ClaimedAmountResult.Success succ)
             {
-                vm.ClaimedAmount = amtError.amount.Value;
+				vm.ClaimedAmount = succ.Amount;
             }
 
             if (!ModelState.IsValid)
@@ -237,12 +238,13 @@ namespace BTCPayServer.Controllers
                 return await ViewPullPayment(pullPaymentId);
             }
 
-            var result = await _pullPaymentHostedService.Claim(new ClaimRequest
+            var result = await pullPaymentHostedService.Claim(new ClaimRequest
             {
                 Destination = destination,
                 PullPaymentId = pullPaymentId,
-                Value = vm.ClaimedAmount,
-                PaymentMethodId = paymentMethodId
+                ClaimedAmount = vm.ClaimedAmount,
+                PayoutMethodId = payoutMethodId,
+                StoreId = pp.StoreId
             });
 
             if (result.Result != ClaimRequest.ClaimResult.Ok)
@@ -253,11 +255,19 @@ namespace BTCPayServer.Controllers
                 return await ViewPullPayment(pullPaymentId);
             }
 
-            TempData.SetStatusMessageModel(new StatusMessageModel
-            {
-                Message = $"Your claim request of {_displayFormatter.Currency(vm.ClaimedAmount, ppBlob.Currency, DisplayFormatter.CurrencyFormat.Symbol)} to {vm.Destination} has been submitted and is awaiting {(result.PayoutData.State == PayoutState.AwaitingApproval ? "approval" : "payment")}.",
-                Severity = StatusMessageModel.StatusSeverity.Success
-            });
+
+			TempData.SetStatusMessageModel(new StatusMessageModel
+			{
+				Message = (vm.ClaimedAmount, result.PayoutData.State) switch
+				{
+					(null, PayoutState.AwaitingApproval) => $"Your claim request to {vm.Destination} has been submitted and is awaiting approval",
+					(null, PayoutState.AwaitingPayment) => $"Your claim request to {vm.Destination} has been submitted and is awaiting payment",
+					({ } a, PayoutState.AwaitingApproval) => $"Your claim request of {displayFormatter.Currency(a, pp.Currency, DisplayFormatter.CurrencyFormat.Symbol)} to {vm.Destination} has been submitted and is awaiting approval",
+					({ } a, PayoutState.AwaitingPayment) => $"Your claim request of {displayFormatter.Currency(a, pp.Currency, DisplayFormatter.CurrencyFormat.Symbol)} to {vm.Destination} has been submitted and is awaiting payment",
+					_ => $"Unexpected payout state ({result.PayoutData.State})"
+				},
+				Severity = StatusMessageModel.StatusSeverity.Success
+			});
 
             return RedirectToAction(nameof(ViewPullPayment), new { pullPaymentId });
         }

@@ -1,8 +1,3 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 
@@ -50,12 +45,9 @@ namespace BTCPayServer.Data
                 .HasForeignKey(o => new { o.WalletId, o.BType, o.BId })
                 .OnDelete(DeleteBehavior.Cascade);
 
-            if (databaseFacade.IsNpgsql())
-            {
-                builder.Entity<WalletObjectLinkData>()
-                                .Property(o => o.Data)
-                                .HasColumnType("JSONB");
-            }
+            builder.Entity<WalletObjectLinkData>()
+                            .Property(o => o.Data)
+                            .HasColumnType("JSONB");
         }
     }
 }

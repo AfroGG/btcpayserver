@@ -1,6 +1,4 @@
 using System;
-using System.Collections.Generic;
-using System.Text;
 using Newtonsoft.Json;
 
 namespace BTCPayServer.Client.Models
@@ -11,8 +9,7 @@ namespace BTCPayServer.Client.Models
         {
             public bool Everything { get; set; } = true;
 
-            [JsonProperty(ItemConverterType = typeof(Newtonsoft.Json.Converters.StringEnumConverter))]
-            public WebhookEventType[] SpecificEvents { get; set; } = Array.Empty<WebhookEventType>();
+            public string[] SpecificEvents { get; set; } = Array.Empty<string>();
         }
 
         public bool Enabled { get; set; } = true;

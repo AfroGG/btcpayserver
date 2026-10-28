@@ -1,5 +1,7 @@
+#nullable enable
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Linq;
 using Microsoft.CodeAnalysis;
@@ -22,6 +24,14 @@ namespace BTCPayServer.Rating
         RateUnavailable,
         InvalidExchangeName,
     }
+
+    public record RateRulesCollection(RateRules Primary, RateRules? Fallback)
+    {
+        public RateRuleCollection GetRuleFor(CurrencyPair currencyPair)
+        => new(Primary.GetRuleFor(currencyPair), Fallback?.GetRuleFor(currencyPair));
+    }
+    public record RateRuleCollection(RateRule Primary, RateRule? Fallback);
+
     public class RateRules
     {
         class NormalizeCurrencyPairsRewritter : CSharpSyntaxRewriter
@@ -29,7 +39,7 @@ namespace BTCPayServer.Rating
             public List<RateRulesErrors> Errors = new List<RateRulesErrors>();
 
             bool IsInvocation;
-            public override SyntaxNode VisitInvocationExpression(InvocationExpressionSyntax node)
+            public override SyntaxNode? VisitInvocationExpression(InvocationExpressionSyntax node)
             {
                 if (IsInvocation)
                 {
@@ -50,7 +60,7 @@ namespace BTCPayServer.Rating
                     return node;
                 }
             }
-            public override SyntaxNode VisitIdentifierName(IdentifierNameSyntax node)
+            public override SyntaxNode? VisitIdentifierName(IdentifierNameSyntax node)
             {
                 if (CurrencyPair.TryParse(node.Identifier.ValueText, out var currencyPair))
                 {
@@ -122,11 +132,17 @@ namespace BTCPayServer.Rating
             // Remove every irrelevant statements
             this.root = ruleList.GetSyntaxNode();
         }
-        public static bool TryParse(string str, out RateRules rules)
+        public static bool TryParse(string str, [MaybeNullWhen(false)] out RateRules rules)
         {
             return TryParse(str, out rules, out var unused);
         }
-        public static bool TryParse(string str, out RateRules rules, out List<RateRulesErrors> errors)
+        public static RateRules Parse(string str)
+        {
+            if (TryParse(str, out var rules, out var err))
+                return rules;
+            throw new FormatException(String.Join(", ", err));
+        }
+        public static bool TryParse(string str, [MaybeNullWhen(false)] out RateRules rules, [MaybeNullWhen(true)] out List<RateRulesErrors> errors)
         {
             str = ImplicitSatsRule + str;
             rules = null;
@@ -147,7 +163,7 @@ namespace BTCPayServer.Rating
         public RateRule GetRuleFor(CurrencyPair currencyPair)
         {
             if (currencyPair.Left == "X" || currencyPair.Right == "X")
-                throw new ArgumentException(paramName: nameof(currencyPair), message: "Invalid X currency");
+                return new RateRule(this, currencyPair, CreateExpression($"ERR_INVALID_CURRENCY_PAIR({currencyPair})"));
             if (currencyPair.Left == currencyPair.Right)
                 return new RateRule(this, currencyPair, CreateExpression("1.0"));
             var candidate = FindBestCandidate(currencyPair);
@@ -194,6 +210,12 @@ namespace BTCPayServer.Rating
             return (ExpressionSyntax)CSharpSyntaxTree.ParseText(str, new CSharpParseOptions(LanguageVersion.Default).WithKind(SourceCodeKind.Script)).GetRoot().ChildNodes().First().ChildNodes().First().ChildNodes().First();
         }
 
+        public static RateRules Combine(IEnumerable<RateRules> rateRules)
+        {
+            var str = string.Join(Environment.NewLine, rateRules.Select(r => r.ToString()));
+            return Parse(str);
+        }
+
         public override string ToString()
         {
             return root.NormalizeWhitespace("", "\n")
@@ -209,8 +231,8 @@ namespace BTCPayServer.Rating
         class ReplaceExchangeRateRewriter : CSharpSyntaxRewriter
         {
             public List<RateRulesErrors> Errors = new List<RateRulesErrors>();
-            public ExchangeRates Rates;
-            public override SyntaxNode VisitInvocationExpression(InvocationExpressionSyntax node)
+            public ExchangeRates? Rates;
+            public override SyntaxNode? VisitInvocationExpression(InvocationExpressionSyntax node)
             {
                 var exchangeName = node.Expression.ToString();
                 if (exchangeName.StartsWith("ERR_", StringComparison.OrdinalIgnoreCase))
@@ -227,11 +249,11 @@ namespace BTCPayServer.Rating
                 }
                 else
                 {
-                    var rate = Rates.GetRate(exchangeName, pair);
+                    var rate = Rates?.GetRate(exchangeName, pair);
                     if (rate == null)
                     {
                         Errors.Add(RateRulesErrors.RateUnavailable);
-                        return RateRules.CreateExpression($"ERR_RATE_UNAVAILABLE({exchangeName}, {pair.ToString()})");
+                        return RateRules.CreateExpression($"ERR_RATE_UNAVAILABLE({exchangeName}, {pair})");
                     }
                     else
                     {
@@ -349,7 +371,7 @@ namespace BTCPayServer.Rating
                 }
             }
 
-            Stack<decimal> _TupleValues = null;
+            Stack<decimal>? _TupleValues = null;
             public override void VisitTupleExpression(TupleExpressionSyntax node)
             {
                 _TupleValues = new Stack<decimal>();
@@ -412,7 +434,7 @@ namespace BTCPayServer.Rating
 
             public ExchangeRates ExchangeRates = new ExchangeRates();
             bool IsInvocation;
-            public override SyntaxNode VisitInvocationExpression(InvocationExpressionSyntax node)
+            public override SyntaxNode? VisitInvocationExpression(InvocationExpressionSyntax node)
             {
                 if (IsInvocation)
                 {
@@ -427,7 +449,7 @@ namespace BTCPayServer.Rating
             }
 
             bool IsArgumentList;
-            public override SyntaxNode VisitArgumentList(ArgumentListSyntax node)
+            public override SyntaxNode? VisitArgumentList(ArgumentListSyntax node)
             {
                 IsArgumentList = true;
                 var result = base.VisitArgumentList(node);
@@ -435,11 +457,11 @@ namespace BTCPayServer.Rating
                 return result;
             }
 
-            string _ExchangeName = null;
+            string? _ExchangeName = null;
 
             public List<RateRulesErrors> Errors = new List<RateRulesErrors>();
             const int MaxNestedCount = 8;
-            public override SyntaxNode VisitIdentifierName(IdentifierNameSyntax node)
+            public override SyntaxNode? VisitIdentifierName(IdentifierNameSyntax node)
             {
                 if (
                     (!IsInvocation || IsArgumentList) &&
@@ -497,7 +519,7 @@ namespace BTCPayServer.Rating
         public static RateRule CreateFromExpression(string expression, CurrencyPair currencyPair)
         {
             var ex = RateRules.CreateExpression(expression);
-            RateRules.TryParse("", out var rules);
+            var rules = RateRules.Parse("");
             return new RateRule(rules, currencyPair, ex);
         }
         public RateRule(RateRules parent, CurrencyPair currencyPair, SyntaxNode candidate)
@@ -528,7 +550,7 @@ namespace BTCPayServer.Rating
 
         public bool Reevaluate()
         {
-            _BidAsk = null;
+            BidAsk = null;
             _EvaluatedNode = null;
             _Evaluated = null;
             Errors.Clear();
@@ -554,7 +576,7 @@ namespace BTCPayServer.Rating
                 }
                 return false;
             }
-            _BidAsk = calculate.Values.Pop();
+            BidAsk = calculate.Values.Pop();
             _EvaluatedNode = result;
             return true;
         }
@@ -569,8 +591,8 @@ namespace BTCPayServer.Rating
             }
         }
 
-        SyntaxNode _EvaluatedNode;
-        string _Evaluated;
+        SyntaxNode? _EvaluatedNode;
+        string? _Evaluated;
         public bool HasError
         {
             get
@@ -592,14 +614,6 @@ namespace BTCPayServer.Rating
         {
             return expression.NormalizeWhitespace("", "\n").ToString();
         }
-
-        BidAsk _BidAsk;
-        public BidAsk BidAsk
-        {
-            get
-            {
-                return _BidAsk;
-            }
-        }
+        public BidAsk? BidAsk { get; private set; }
     }
 }

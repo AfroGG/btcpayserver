@@ -8,6 +8,7 @@ using BTCPayServer.Models.WalletViewModels;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
+using NBitcoin;
 using Newtonsoft.Json.Linq;
 
 namespace BTCPayServer.Services.Labels;
@@ -92,9 +93,24 @@ public class LabelService
                         ? null
                         : _linkGenerator.InvoiceLink(tag.Id, req.Scheme, req.Host, req.PathBase);
             }
+            else if (tag.Type == WalletObjectData.Types.RBF)
+            {
+                var txs = ((tag.LinkData?["txs"] as JArray)?.Select(e => e.ToString()) ?? []).ToHashSet();
+                var txsStr = string.Join(", ", txs);
+                model.Tooltip = $"This is transaction is replacing the following transactions: {txsStr}";
+                model.Link = "#";
+            }
+            else if (tag.Type == WalletObjectData.Types.CPFP)
+            {
+                var txs = ((tag.LinkData?["outpoints"] as JArray)?.Select(e => OutPoint.Parse(e.ToString()).Hash) ?? []).ToHashSet();
+                var txsStr = string.Join(", ", txs);
+                model.Tooltip = $"This is transaction is paying for fee for the following transactions: {txsStr}";
+                model.Link = "#";
+            }
             else if (tag.Type == WalletObjectData.Types.PaymentRequest)
             {
-                model.Tooltip = $"Received through a payment request {tag.Id}";
+                var title = tag.Data?["title"]?.ToString() ?? tag.Id;
+                model.Tooltip = $"Payment request: {title}";
                 model.Link = _linkGenerator.PaymentRequestLink(tag.Id, req.Scheme, req.Host, req.PathBase);
             }
             else if (tag.Type == WalletObjectData.Types.App)
@@ -114,6 +130,11 @@ public class LabelService
                 {
                     model.Tooltip = $"This UTXO was exposed through a PayJoin proposal";
                 }
+            }
+            else if (tag.Type == WalletObjectData.Types.PullPayment)
+            {
+                model.Tooltip = $"Received through a pull payment {tag.Id}";
+                model.Link = _linkGenerator.PullPaymentLink(tag.Id, req.Scheme, req.Host, req.PathBase);
             }
             else if (tag.Type == WalletObjectData.Types.Payjoin)
             {

@@ -1,9 +1,6 @@
-using System;
-using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Net.Http;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using BTCPayServer.Rating;
@@ -21,7 +18,7 @@ namespace BTCPayServer.Services.Rates
         }
         public async Task<PairRate[]> GetRatesAsync(CancellationToken cancellationToken)
         {
-            var response = await _httpClient.GetAsync("https://api.ripiotrade.co/v4/public/tickers", cancellationToken);
+            using var response = await _httpClient.GetAsync("https://api.ripiotrade.co/v4/public/tickers", cancellationToken);
             response.EnsureSuccessStatusCode();
             var jarray = (JArray)(await response.Content.ReadAsAsync<JObject>(cancellationToken))["data"];
             return jarray

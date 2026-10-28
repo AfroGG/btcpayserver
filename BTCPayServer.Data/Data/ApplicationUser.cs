@@ -1,9 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations.Schema;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
-using Newtonsoft.Json.Linq;
 
 namespace BTCPayServer.Data
 {
@@ -11,6 +11,8 @@ namespace BTCPayServer.Data
     public class ApplicationUser : IdentityUser, IHasBlob<UserBlob>
     {
         public bool RequiresEmailConfirmation { get; set; }
+        public bool RequiresApproval { get; set; }
+        public bool Approved { get; set; }
         public List<StoredFile> StoredFiles { get; set; }
         [Obsolete("U2F support has been replace with FIDO2")]
         public List<U2FDevice> U2FDevices { get; set; }
@@ -28,22 +30,28 @@ namespace BTCPayServer.Data
 
         public List<IdentityUserRole<string>> UserRoles { get; set; }
 
+        [NotMapped]
+        public bool IsDisabled =>
+            this is { LockoutEnabled: true, LockoutEnd: { } lockoutEnd } &&
+            DateTimeOffset.UtcNow < lockoutEnd.UtcDateTime;
+
         public static void OnModelCreating(ModelBuilder builder, DatabaseFacade databaseFacade)
         {
             builder.Entity<ApplicationUser>()
                 .HasMany<IdentityUserRole<string>>(user => user.UserRoles)
                 .WithOne().HasForeignKey(role => role.UserId);
-            if (databaseFacade.IsNpgsql())
-            {
-                builder.Entity<ApplicationUser>()
-                    .Property(o => o.Blob2)
-                    .HasColumnType("JSONB");
-            }
+
+            builder.Entity<ApplicationUser>()
+                .Property(o => o.Blob2)
+                .HasColumnType("JSONB");
         }
     }
 
     public class UserBlob
     {
         public bool ShowInvoiceStatusChangeHint { get; set; }
+        public string ImageUrl { get; set; }
+        public string Name { get; set; }
+        public string InvitationToken { get; set; }
     }
 }

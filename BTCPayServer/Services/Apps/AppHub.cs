@@ -1,8 +1,6 @@
 using System;
 using System.Threading.Tasks;
 using BTCPayServer.Abstractions.Extensions;
-using BTCPayServer.Controllers;
-using BTCPayServer.Models.AppViewModels;
 using BTCPayServer.Plugins.Crowdfund.Controllers;
 using BTCPayServer.Plugins.Crowdfund.Models;
 using Microsoft.AspNetCore.Builder;
@@ -46,7 +44,7 @@ namespace BTCPayServer.Services.Apps
             {
 
                 var result =
-                    await _crowdfundController.ContributeToCrowdfund(Context.Items["app"].ToString(), model, Context.ConnectionAborted);
+                    await _crowdfundController.ContributeToCrowdfund(Context.Items["app"].ToString(), model, cancellationToken: Context.ConnectionAborted);
                 switch (result)
                 {
                     case OkObjectResult okObjectResult:

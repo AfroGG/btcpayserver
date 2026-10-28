@@ -4,13 +4,15 @@ using NBitcoin;
 
 namespace BTCPayServer.Models.WalletViewModels
 {
-    public class SignWithSeedViewModel
+    public class SignWithSeedViewModel : IHasBackAndReturnUrl
     {
         public SigningContextModel SigningContext { get; set; } = new SigningContextModel();
 
         [Required]
         [Display(Name = "BIP39 Seed (12/24 word mnemonic phrase) or HD private key (xprv...)")]
         public string SeedOrKey { get; set; }
+
+        public bool UseHotWallet { get; set; }
 
         [Display(Name = "Optional seed passphrase")]
         public string Passphrase { get; set; }

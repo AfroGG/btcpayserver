@@ -1,30 +1,28 @@
-@using System.Security.Claims
 @using BTCPayServer.Abstractions.Contracts;
 @using BTCPayServer.Configuration;
-@using BTCPayServer.Data;
 @using BTCPayServer.Services.Notifications;
-@using Microsoft.AspNetCore.Identity;
 @using Microsoft.AspNetCore.Routing;
+@using Microsoft.Extensions.Localization
 @implements IDisposable
 @inject AuthenticationStateProvider _AuthenticationStateProvider
 @inject NotificationManager _NotificationManager
-@inject UserManager<ApplicationUser> _UserManager
+@inject IStringLocalizer StringLocalizer
 @inject IJSRuntime _JSRuntime
 @inject LinkGenerator _LinkGenerator
 @inject BTCPayServerOptions _BTCPayServerOptions
 @inject EventAggregator _EventAggregator
 
-<div id="Notifications">
+<div id="Notifications"  class="@(!_JSRuntime.IsPreRendering() ? "rendered" : "")">
 	@if (UnseenCount == "0")
 	{
-		<a href="@NotificationsUrl" id="NotificationsHandle" class="mainMenuButton" title="Notifications">
-			<Icon Symbol="notifications" />
+		<a href="@NotificationsUrl" id="NotificationsHandle" class="mainMenuButton" title="@StringLocalizer["Notifications"]">
+			<Icon Symbol="nav-notifications" />
 		</a>
 	}
 	else
 	{
-		<button id="NotificationsHandle" class="mainMenuButton" title="Notifications" type="button" data-bs-toggle="dropdown">
-			<Icon Symbol="notifications" />
+		<button id="NotificationsHandle" class="mainMenuButton" title="@StringLocalizer["Notifications"]" type="button" data-bs-toggle="dropdown">
+			<Icon Symbol="nav-notifications" />
 			<span class="badge rounded-pill bg-danger p-1 ms-1" id="NotificationsBadge">@UnseenCount</span>
 		</button>
 	}
@@ -32,13 +30,13 @@
 	{
 		<div class="dropdown-menu text-center" id="NotificationsDropdown" aria-labelledby="NotificationsHandle">
 			<div class="d-flex gap-3 align-items-center justify-content-between py-3 px-4 border-bottom border-light">
-				<h5 class="m-0">Notifications</h5>
-				<a class="btn btn-link p-0" @onclick="MarkAllAsSeen" id="NotificationsMarkAllAsSeen">Mark all as seen</a>
+				<h5 class="m-0" text-translate="true">Notifications</h5>
+				<a class="btn btn-link p-0" @onclick="MarkAllAsSeen" id="NotificationsMarkAllAsSeen" text-translate="true">Mark all as seen</a>
 			</div>
 			<div id="NotificationsList" v-pre>
 				@foreach (var n in Last5)
 				{
-					<a href="@NotificationUrl(n.Id)" class="notification d-flex align-items-center dropdown-item border-bottom border-light py-3 px-4">
+                    <a href="@NotificationUrl(n.Id)" class="notification d-flex align-items-center dropdown-item border-bottom border-light py-3 px-4" @key="@n.Id">
 						<div class="me-3">
 							<Icon Symbol="@NotificationIcon(n.Identifier)" />
 						</div>
@@ -55,7 +53,7 @@
 			</div>
 
 			<div class="p-3">
-				<a href="@NotificationsUrl">View all</a>
+				<a href="@NotificationsUrl" text-translate="true">View all</a>
 			</div>
 		</div>
 	}
@@ -86,7 +84,8 @@
 	}
 
 	public void Dispose() => _EventAggregatorListener?.Dispose();
-	string SeenCount(int? count)
+
+    static string SeenCount(int? count)
 	{
 		if (count is not int c)
 			return "0";
@@ -94,12 +93,15 @@
 			return $"{NotificationManager.MaxUnseen - 1}+";
 		return c.ToString();
 	}
+
 	void UpdateState((List<NotificationViewModel> Items, int? Count) res)
 	{
 		UnseenCount = SeenCount(res.Count);
 		Last5 = res.Items;
+        StateHasChanged();
 	}
-	protected async override Task OnParametersSetAsync()
+
+	protected override async Task OnParametersSetAsync()
 	{
 		if (await GetUserId() is string userId)
 		{
@@ -117,22 +119,23 @@
 			}
 		}
 	}
-	async Task<string>
-	GetUserId()
+
+	async Task<string> GetUserId()
 	{
 		var state = await _AuthenticationStateProvider.GetAuthenticationStateAsync();
-		if (!state.User.Identity.IsAuthenticated)
-			return null;
-		return _UserManager.GetUserId(state.User);
+		return state.User.GetIdOrNull();
 	}
-	public async Task MarkAllAsSeen()
+
+    private async Task MarkAllAsSeen()
 	{
 		if (await GetUserId() is string userId)
 		{
 			await _NotificationManager.ToggleSeen(new NotificationsQuery() { Seen = false, UserId = userId }, true);
 			UnseenCount = "0";
+            StateHasChanged();
 		}
 	}
+
 	private static string NotificationIcon(string type)
 	{
 		return type switch
@@ -145,7 +148,10 @@
 			"external-payout-transaction" => "notifications-payout",
 			"payout_awaitingapproval" => "notifications-payout",
 			"payout_awaitingpayment" => "notifications-payout-approved",
-			"newversion" => "notifications-new-version",
+            "inviteaccepted" => "notifications-account",
+			"newuserrequiresapproval" => "notifications-account",
+            "newversion" => "notifications-new-version",
+            "pluginupdate" => "notifications-new-version",
 			_ => "note"
 		};
 	}

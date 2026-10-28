@@ -1,11 +1,5 @@
-using System;
-using System.Security.AccessControl;
 using System.Threading.Tasks;
-using BTCPayServer.Data;
-using BTCPayServer.Models.AppViewModels;
 using BTCPayServer.Services.Apps;
-using BTCPayServer.Services.Stores;
-using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.ViewComponents;
 using Microsoft.AspNetCore.Mvc.ViewFeatures;
@@ -30,19 +24,19 @@ public class AppSales : ViewComponent
     public async Task<IViewComponentResult> InvokeAsync(string appId, string appType)
     {
         var type = _appService.GetAppType(appType);
-        if (type is not IHasSaleStatsAppType salesAppType || type is not AppBaseType appBaseType)
+        if (type is not IHasSaleStatsAppType || type is not AppBaseType appBaseType)
             return new HtmlContentViewComponentResult(new StringHtmlContent(string.Empty));
         var vm = new AppSalesViewModel
         {
             Id = appId,
             AppType = appType,
             DataUrl = Url.Action("AppSales", "UIApps", new { appId }),
-            InitialRendering = HttpContext.GetAppData()?.Id != appId
+            InitialRendering = HttpContext.GetAppDataOrNull()?.Id != appId
         };
         if (vm.InitialRendering)
             return View(vm);
 
-        var app = HttpContext.GetAppData();
+        var app = HttpContext.GetAppDataOrNull();
         var stats = await _appService.GetSalesStats(app);
         vm.SalesCount = stats.SalesCount;
         vm.Series = stats.Series;

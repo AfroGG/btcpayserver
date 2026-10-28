@@ -1,4 +1,3 @@
-using System;
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 using Microsoft.EntityFrameworkCore;
@@ -30,12 +29,10 @@ namespace BTCPayServer.Data
                 .HasOne(o => o.ApplicationUser)
                 .WithMany(i => i.Fido2Credentials)
                 .HasForeignKey(i => i.ApplicationUserId).OnDelete(DeleteBehavior.Cascade);
-            if (databaseFacade.IsNpgsql())
-            {
-                builder.Entity<Fido2Credential>()
-                    .Property(o => o.Blob2)
-                    .HasColumnType("JSONB");
-            }
+
+            builder.Entity<Fido2Credential>()
+                .Property(o => o.Blob2)
+                .HasColumnType("JSONB");
         }
 
         public ApplicationUser ApplicationUser { get; set; }

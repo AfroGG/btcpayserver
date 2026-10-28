@@ -2,7 +2,6 @@ using System;
 using System.IO;
 using System.Linq;
 using System.Net;
-using BTCPayServer.Configuration;
 using BTCPayServer.Logging;
 using BTCPayServer.SSH;
 using Microsoft.Extensions.Configuration;
@@ -60,10 +59,7 @@ namespace BTCPayServer.Configuration
         {
             NetworkType = DefaultConfiguration.GetNetworkType(conf);
 
-            Logs.Configuration.LogInformation("Network: " + NetworkType.ToString());
-
-            if (conf.GetOrDefault<bool>("launchsettings", false) && NetworkType != ChainName.Regtest)
-                throw new ConfigException($"You need to run BTCPayServer with the run.sh or run.ps1 script");
+            Logs.Configuration.LogInformation("Network: " + NetworkType);
 
             if (conf.GetOrDefault<string>("POSTGRES", null) == null)
             {

@@ -12,14 +12,10 @@ public static class HttpRequestExtensions
         return request.Host.Host.EndsWith(".onion", StringComparison.OrdinalIgnoreCase);
     }
 
+    public static RequestBaseUrl GetRequestBaseUrl(this HttpRequest request) => new (request);
+
     public static string GetAbsoluteRoot(this HttpRequest request)
-    {
-        return string.Concat(
-            request.Scheme,
-            "://",
-            request.Host.ToUriComponent(),
-            request.PathBase.ToUriComponent());
-    }
+        => request.GetRequestBaseUrl().ToString();
 
     public static Uri GetAbsoluteRootUri(this HttpRequest request)
     {
@@ -34,6 +30,17 @@ public static class HttpRequestExtensions
             request.Host.ToUriComponent(),
             request.PathBase.ToUriComponent(),
             request.Path.ToUriComponent());
+    }
+
+    public static string GetCurrentUrlWithQueryString(this HttpRequest request)
+    {
+        return string.Concat(
+            request.Scheme,
+            "://",
+            request.Host.ToUriComponent(),
+            request.PathBase.ToUriComponent(),
+            request.Path.ToUriComponent(),
+            request.QueryString.ToUriComponent());
     }
 
     public static string GetCurrentPath(this HttpRequest request)
@@ -94,9 +101,9 @@ public static class HttpRequestExtensions
     }
 
     /// <summary>
-    /// Will return an absolute URL. 
-    /// If `relativeOrAsbolute` is absolute, returns it.
-    /// If `relativeOrAsbolute` is relative, send absolute url based on the HOST of this request (without PathBase)
+    /// Will return an absolute URL.
+    /// If `relativeOrAbsolute` is absolute, returns it.
+    /// If `relativeOrAbsolute` is relative, send absolute url based on the HOST of this request (without PathBase)
     /// </summary>
     /// <param name="request"></param>
     /// <param name="relativeOrAbsolte"></param>

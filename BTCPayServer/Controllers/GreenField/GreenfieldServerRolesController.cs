@@ -28,15 +28,10 @@ public class GreenfieldServerRolesController : ControllerBase
     [HttpGet("~/api/v1/server/roles")]
     public async Task<IActionResult> GetServerRoles()
     {
-        return Ok(FromModel(await _storeRepository.GetStoreRoles(null, false, false)));
+        return Ok(FromModel(await _storeRepository.GetStoreRoles(null, false)));
     }
     private List<RoleData> FromModel(StoreRepository.StoreRole[] data)
     {
         return data.Select(r => new RoleData() {Role = r.Role, Id = r.Id, Permissions = r.Permissions, IsServerRole = true}).ToList();
-    }
-
-    private IActionResult StoreNotFound()
-    {
-        return this.CreateAPIError(404, "store-not-found", "The store was not found");
     }
 }

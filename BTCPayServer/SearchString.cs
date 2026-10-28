@@ -9,7 +9,8 @@ namespace BTCPayServer
     {
         private const char FilterSeparator = ',';
         private const char ValueSeparator = ':';
-        
+        private static readonly string[] StripFilters = ["status", "exceptionstatus", "unusual", "includearchived", "appid", "startdate", "enddate"];
+
         private readonly string _originalString;
         private readonly int _timezoneOffset;
 
@@ -27,12 +28,18 @@ namespace BTCPayServer
                     .Where(kv => kv.Length == 2)
                     .Select(kv => new KeyValuePair<string, string>(UnifyKey(kv[0]), kv[1]))
                     .ToMultiValueDictionary(o => o.Key, o => o.Value);
-
-            var val = splitted.FirstOrDefault(a => a.IndexOf(ValueSeparator, StringComparison.OrdinalIgnoreCase) == -1);
-            TextSearch = val != null ? val.Trim() : string.Empty;
+            // combine raw search term and filters which don't have a special UI (e.g. orderid)
+            var textFilters = Filters
+                .Where(f => !StripFilters.Contains(f.Key))
+                .Select(f => string.Join(FilterSeparator, f.Value.Select(v => $"{f.Key}{ValueSeparator}{v}"))).ToList();
+            TextFilters = textFilters.Any() ? string.Join(FilterSeparator, textFilters) : null;
+            TextSearch = splitted.FirstOrDefault(a => a.IndexOf(ValueSeparator, StringComparison.OrdinalIgnoreCase) == -1)?.Trim();
         }
 
         public string TextSearch { get; private set; }
+        public string TextFilters { get; private set; }
+
+        public string TextCombined => string.Join(FilterSeparator, new []{ TextFilters, TextSearch }.Where(x => !string.IsNullOrEmpty(x)));
 
         public MultiValueDictionary<string, string> Filters { get; }
 
@@ -62,13 +69,13 @@ namespace BTCPayServer
                 var newValue = string.IsNullOrEmpty(value) || current == value ? string.Empty : keyValue;
                 return Finalize(_originalString.Replace(oldValue, newValue));
             }
-            
+
             var arrayFilter = GetFilterArray(key);
             if (arrayFilter != null)
             {
                 if (string.IsNullOrEmpty(value))
                 {
-                    return Finalize(arrayFilter.Aggregate(ToString(), (current, filter) => 
+                    return Finalize(arrayFilter.Aggregate(ToString(), (current, filter) =>
                         current.Replace($"{key}{ValueSeparator}{filter}", string.Empty)));
                 }
                 return Finalize(arrayFilter.Contains(value)
@@ -82,9 +89,15 @@ namespace BTCPayServer
 
         public string WithoutSearchText()
         {
-            return string.IsNullOrEmpty(TextSearch)
-                ? Finalize(ToString())
-                : Finalize(ToString()).Replace(TextSearch, string.Empty);
+            List<string> parts = new();
+            foreach (var kv in Filters.Where(f => StripFilters.Contains(f.Key)))
+            {
+                foreach (var value in kv.Value)
+                {
+                    parts.Add($"{kv.Key}{ValueSeparator}{value}");
+                }
+            }
+            return string.Join(FilterSeparator, parts);
         }
 
         public string[] GetFilterArray(string key)
@@ -141,10 +154,10 @@ namespace BTCPayServer
         {
             return key.ToLowerInvariant().Trim();
         }
-        
+
         private static string Finalize(string str)
         {
-            var value = str.TrimStart(FilterSeparator).TrimEnd(FilterSeparator);
+            var value = str.Trim().TrimStart(FilterSeparator).TrimEnd(FilterSeparator);
             return string.IsNullOrEmpty(value) ? " " : value;
         }
     }
